@@ -7,6 +7,8 @@ Anthropogenic increases in temperature and nutrient loads will likely impact foo
 
 
 This repository has the following files:
-1) Density data for all species studies: Density_Data.csv
-2) Trait data for all species studied: XXXXXX.csv
-3) R Code that reproduces all analyses presented in the main text: ZZZZZZZ.csv
+1) Density data for protists studied: Density.csv
+2) Trait data for all species studied: Trait_summary.csv
+3) Bacteria OD600 data: bac_OD.csv
+4) R Code that reproduces all analyses presented in the main text: BTE_main_text_code.csv
+5) R Code that reproduces all analyses presented in the Appendix: BTE_Appendix.csv
