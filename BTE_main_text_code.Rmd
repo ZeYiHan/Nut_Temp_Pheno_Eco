@@ -1,0 +1,718 @@
+---
+title: "BTE Main Text Figures"
+author: "Zeyi Han"
+date: "5/31/2021"
+output:
+  html_document:
+    fig_caption: yes
+    highlight: pygments
+    theme: spacelab
+    toc: yes
+    toc_depth: 3
+    code_folding: hide
+---
+
+<style>
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Bookman", "Gerogia";
+    color: ##69b3a2
+}
+
+a, a:hover {
+    color: ##b24e00;
+}
+
+pre {
+    font-size: 12px;
+    color: ##546399;
+}
+</style>
+
+
+---
+```{r setup, echo = FALSE}
+### Loadings----
+knitr::opts_chunk$set(eval = TRUE, cache = TRUE, warning=FALSE, message=FALSE,fig.width=6, fig.height=4, fig.align = "center")
+pacman::p_load(ggplot2, psych, reshape2, cowplot,dplyr,tidyr,data.table,readr,mgcv,nlme,broom,rEDM, shape)
+```
+
+# Data 
+
+Data read in
+
+We used log density to standardize the variance in protists density time series. Since in some days, the protists density is 0, and will result -INF by log(), we added 1 to all the density before calculating the log density for model fitting. We minused the 1 after exponentiating the model predictions. 
+```{r}
+### data read in------
+## density 
+milou_dens0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_density.csv")
+milou_dens <- milou_dens0  %>% mutate(tre=as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 24), log_density = log(density + 1)) %>% select(-1) # 
+tetra <- milou_dens[which(milou_dens$Class=="Tetrahymena"),]
+eup <- milou_dens[which(milou_dens$Class=="Euplotes"),]
+bac0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_bac_nColony.csv")
+bac1 <- bac0 %>% mutate(tre = as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 11), temp_num = as.numeric(rep(c(22,25), each = 6, times = 22)), nut_num = as.numeric(rep(c(1,0.5), each = 12, times = 11)))
+```
+
+We calculated the mean and standard variation for bacteria OD after day 5. One data point that is more than 3 standard deviation away from the mean is removed. 
+
+```{r}
+sd <- sd(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+mean <- mean(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+bac <- bac1[-which(bac1$OD > mean+3*sd),]
+```
+
+Since after population collapse, Tetrahymena are functionally extinct and so, even if we occasionally found individual, trait distributions are unreliable. For traits observation made after each Tetrahymena treatment collapsed (once population density became 0 ind/ml) that with less than 10 number of individual, we considered them unreliable and, thus, removed for future analysis. 
+
+```{r }
+## trait
+t_summ0 <- fread("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_trait_summary.csv")
+t_summ <- t_summ0 %>% mutate(rep = as.character(rep),
+         tre = as.factor(tre),temp_num = as.numeric(temp_num), nut_num = as.numeric(nut_num),rep = as.factor(rep), tre = as.factor(tre), all_rep = rep(1:24, time = 24), temp = as.factor(temp), nut = as.factor(nut))
+tetraSumm <- t_summ %>% filter(Class =="Tetrahymena") 
+eupSummtrait <- t_summ %>% filter(Class =="Euplotes")
+
+# replace NA for tetra trait}
+# Half 22C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Half22C" & tetraSumm$day>10 & tetraSumm$num_ind<10)] <- NA
+# Full 22C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Full22C" & tetraSumm$day>11 & tetraSumm$num_ind<10)] <- NA
+# Half 25C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Half25C" & tetraSumm$day>8 & tetraSumm$num_ind<10)] <- NA
+# Full 25C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Full25C" & tetraSumm$day>8 & tetraSumm$num_ind<10)] <- NA
+
+# trait group mean
+tetraSummMean <- tetraSumm %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9)
+eupSummMean <- eupSummtrait %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9) %>% filter(day <= 9)
+
+# cropped time series for second version of CCM
+tetraSumm_crop <- tetraSumm %>% filter(day <= 9)
+eupSumm_crop <- eupSummtrait %>% filter(day <=9)
+```
+
+# Figure 1 
+
+Calculate mean density of Bacteria, Tetrahymena, and Euplotes
+```{r}
+bac.2 <- bac %>%
+  rename(density = OD) %>% 
+  select(tre:density,treatNum) %>%
+  mutate(temp = as.factor(temp))
+
+teb.all <- milou_dens %>% 
+ select(tre:density,temp_num,-temp,treatNum)  %>%
+  rename(temp = temp_num) %>%
+  mutate(temp = as.factor(temp), nut = as.factor(nut),day = as.numeric(day))%>%
+  full_join(bac.2) %>% 
+  na.omit() %>%
+  group_by(Class,tre,treatNum, nut, temp,day) %>%
+  summarise(mean.d = mean(density),
+            log.d = log(mean.d +1)) %>%
+  mutate(day = as.numeric(day))
+
+teb.mean <- teb.all %>%
+ select(Class:mean.d) %>%
+  spread(key=Class, value = mean.d)
+```
+
+
+## Fig 1a. Overall average ecological dynamics
+
+```{r Fig 1a combine plot data}
+dens1 <- tetra %>% group_by(day) %>% summarise(tetra = log(mean(density+1)), t.err = sd(density+1)/sqrt(24), t.err.log = log(t.err))
+d.eup <- eup %>% group_by(day) %>% summarise(eup = log(mean(density+1)), eup.err = sd(density+1)/sqrt(24), eup.err.log = log(eup.err) ) 
+dens2 <- right_join(dens1,d.eup)
+d.bac <- bac %>% group_by(day) %>% na.omit() %>% summarise(bac = mean(OD), bac.err = sd(OD)/sqrt(24)) 
+dens <- full_join(dens2,d.bac)
+```
+
+```{r TEB combine plot, fig.width=6, fig.height=4}
+# Tetrahymena and Euplotes average abundance
+par(mar = c(5,5,2,5),tcl = 0.5)
+with(dens, plot(day, tetra, type="o",pch=3, cex =2, lwd = 4,col="#818181", ylab="Tetrahymena/Euplotes Abundance", ylim=c(0,12), axes = F))
+axis(side = 1,las=1,cex.axis=1.5,lwd = 2)
+axis(side = 2,las=1,cex.axis=1.5,lwd = 2)
+lines(dens$day,dens$eup, col = "black", lwd = 4) #lty = 2
+points(dens$day,dens$eup, col = "black", pch =4, cex =2,lwd = 4)
+# Bacteria average OD
+par(new = T,tcl = -0.5)
+with(dens, plot(day,bac, type="o", col ="#bcbcbc", cex=2, ylim=c(0, 0.03), lwd = 4, pch = 8,axes=F, xlab=NA, ylab=NA)) 
+axis(side = 4, at = c(0, 0.01,0.02, 0.03),las=1,cex.axis=1.5,lwd = 2)
+mtext(side = 4, 'Bacteria OD')
+```
+
+## Fig 1b-d. Gamm fits for the ecological dynamics
+Based on model comparison (Supplementray Table X), we used the Generalized Additive Mixed Models (GAMM) with 4 treatments for all species for both ecological and phenotypic dynamics. 
+
+```{r}
+# Bacteria ecological dyanmics
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+# Tetrahymena ecological dynamics
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+# Euplotes ecological dynamics
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+
+# function to predict tetrahymena, euplotes, and bacteria density from previous selected models
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+
+pred_gam_TEB <- function(treatment,day, length){
+  df <- data.frame(day=seq(0, day,length.out=length), tre=rep(treatment,length))
+  eup_pred <-  exp(predict.gam(em0$gam,df,type = "response", se.fit =T)$fit)-1
+  tetra_pred <-  exp(predict.gam(tm1$gam,df,type = "response", se.fit =T)$fit)-1 
+  bac_pred <- predict.gam(bm2$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(df[, 1], eup_pred, tetra_pred, bac_pred))
+  colnames(pred) <- c("day","eup_pred", "tetra_pred", "bac_pred" )
+  pred
+}
+
+F22gam <- pred_gam_TEB("Full22C",15, 800)
+F25gam <- pred_gam_TEB("Full25C",15, 800)
+H22gam <- pred_gam_TEB("Half22C",15, 800)
+H25gam <- pred_gam_TEB("Half25C",15, 800)
+
+gam_all <- rbind(F22gam,F25gam,H22gam,H25gam) %>% 
+  mutate(tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 800),
+         temp = rep(c(22,25,22,25), each=800),
+         nut = rep(c("Full", "Half"), each=1600),
+         day=rep(seq(0,15,length.out=800),4)) 
+gam_gather <- gam_all%>%
+  gather(key = "Class", value = "density", eup_pred, tetra_pred , bac_pred)
+```
+
+#### Fig 1b Bacteria overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+trt_name <- c(expression(paste("Full 22 ",degree,"C")),expression(paste("Half 22 ",degree,"C")), expression(paste("Full 25 ",degree,"C")),expression(paste("Half 25 ",degree,"C")) )
+
+# Bacteria
+ggplot(data = bac, aes(x=day,y=OD,group = temp,shape = tre,colour = tre))+ 
+  geom_line(data = gam_all, aes(x=day,y=bac_pred,group = tre, colour = tre), size = 0.8)+ 
+  geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1c Tetrahymena overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+# Tetrahymena
+ggplot(data = tetra, aes(x=day,y=density,group = temp,shape = tre,colour = tre))+ 
+  geom_line(data = gam_all, aes(x=day,y=tetra_pred,group = tre, colour = tre), size = 0.8)+  
+  geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1d Euplotes overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+# Euplotes
+ggplot(data = eup, aes(x=day,y=density,group = temp,shape = tre,colour = tre)) +
+  geom_line(data = gam_all, aes(x=day,y=eup_pred,group = tre, colour = tre), size = 0.8)+ 
+geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+
+```
+
+## Fig 1e-f GAMM fits for phenotypic dynamics of Tetrahymena and Euplotes
+
+#### Fig 1e Tetrahymena overall phenotypic dynamics
+
+```{r Fig 1e Tetrahymena phenotypic dynamics GAMM}
+tt3 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 3))
+ttgam <- data.frame(day=rep(seq(0,9,length.out=500), 4), tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 500, 4))  
+ttgam$tetra <-  predict.gam(tt3$gam,ttgam,type = "response", se.fit =T)$fit
+
+ggplot(ttgam, aes(x=day, y=tetra, color = tre, shape = tre))+ geom_line(width = 2) +
+  geom_jitter(data= tetraSumm, aes(x=day, y = area, color=tre),size = 1.3, jitter = 0.7)+
+  #geom_vline(xintercept=9,color = "#000000",  size = 0.3)+
+   scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.15, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1f Euplotes overall phenotypic dynamics
+
+```{r Fig 1f Euplotes phenotypic dynamics GAMM, fig.width=6, fig.height=4}
+# make days with number of individal less than 10 as NA
+#eupSummtrait$area[which(eupSummtrait$num_ind < 11)] <- NA
+
+et1 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+etgam <- data.frame(day=rep(seq(0,15,length.out=1000), 4), tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 1000, 4))  
+etgam$eup<-  predict.gam(et1$gam,etgam,type = "response", se.fit =T)$fit
+
+ggplot(etgam, aes(x=day, y=eup, color = tre, shape = tre))+ geom_line(width = 2) +
+  geom_jitter(data= eupSummtrait, aes(x=day, y = area, color=tre),size = 1.3, jitter = 0.7)+
+   scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.15, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+# Fig 2 Interactive plot of temperature and nutrients effects on ecological dynamics
+
+## Descriptors for Species Ecological Dynamics
+
+The following are ecological dynamics descriptor calculated for each species. 
+
+#### 1. Bacteria ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+
+```{r bacteria simp desc}
+## New data frame
+bac_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+bac_desc<- bac_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of Bacteria from day0 to day 1
+bac_day0 <- bac[which(bac$day == 0), ]
+bac_day1 <- bac[which(bac$day == 1), ]
+bac_desc$init_growth <- (bac_day1$OD-bac_day0$OD)/8
+
+## max abundance: three days with the top three population density
+bac_max1<- teb.mean%>% group_by(tre,treatNum) %>% select(tre:day,Bacteria) %>% na.omit() %>%  arrange(desc(Bacteria), .by_group = TRUE)%>% slice_max(Bacteria, n=3) 
+
+bm1 <- bac %>% filter(tre == "Full22C", day %in% bac_max1$day[which(bac_max1$tre=="Full22C")])
+bm2 <- bac %>% filter(tre == "Full25C", day %in% bac_max1$day[which(bac_max1$tre=="Full25C")])
+bm3 <- bac %>% filter(tre == "Half22C", day %in% bac_max1$day[which(bac_max1$tre=="Half22C")])
+bm4 <- bac %>% filter(tre == "Half25C", day %in% bac_max1$day[which(bac_max1$tre=="Half25C")])
+
+bac_max <- rbind(bm1, bm2, bm3,bm4) %>% select(tre:temp, OD, -Date) 
+bac_max$nut <- factor(bac_max$nut, levels =  c("Half", "Full"))
+
+# CV
+bac_desc<- bac%>% group_by(tre,rep) %>%na.omit()%>% summarize(sd = sd(OD), meanOD= mean(OD), CV = sd/mean) %>% full_join(bac_desc) 
+
+# mean
+bac.mean_desc <- bac_desc %>% 
+  group_by(tre, nut, temp) %>%
+  na.omit %>%
+  summarise(ig = mean(init_growth),
+            CV.m=mean(CV))
+bac_max_mean <- bac_max %>% group_by(nut, temp,tre) %>% na.omit() %>% summarise(ODmax = mean(OD),ODse = sd(OD))
+```
+
+The data frames for bacteria initial growth and coefficient of variation (CV) looks like: 
+
+```{r}
+head(bac_desc)
+```
+
+We used the top three observed OD600 values for each replicate from each treatment for bacteria as their maximun abundance because their population dynamics remained relatively stable.The dataframe looks like:
+```{r}
+head(bac_max_mean)
+```
+
+
+
+#### 2. Tetrahymena ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+ + Day of population collapse
+ 
+```{r tetrahymena descriptor}
+# new data frame
+tetra_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+tetra_desc<-tetra_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of tetrahymena from day0 to day 1 
+tetra_day0 <- tetra%>% filter(day==0) %>% select(density)
+tetra_day1 <- tetra%>% filter(day==1) %>% select(density)
+tetra_desc$tetra.ig <- log(tetra_day1$density)-log(tetra_day0$density)
+
+ ## max abundance
+tetra_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Tetrahymena) %>% summarize(max = max(Tetrahymena))
+tetra_max <- teb.mean %>% filter(Tetrahymena %in% tetra_max1$max)
+tetra_desc <- tetra%>% filter(tre %in% tetra_max$tre & day %in% tetra_max$day)%>% select(tre,rep,density) %>% rename(max = density)%>% left_join(tetra_desc)
+
+# CV
+tetra_desc <- tetra%>% group_by(tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean)%>% full_join(tetra_desc)
+
+## time collapse
+tetra_desc <- tetra %>% group_by(tre,rep) %>% filter(density == 0) %>% summarize(tc = min(day)) %>% full_join(tetra_desc)
+
+# mean of the descriptors
+t.mean_desc <- tetra_desc %>%
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(tetra.ig),
+            max.m = mean(max), 
+            CV.m = mean(CV),
+            tc.m = mean(tc)) 
+```
+Data frame looks like:
+
+```{r}
+head(tetra_desc)
+```
+
+
+#### 3. Euplotes ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+ + Day of population peak
+
+```{r Eup descriptor, echo = FALSE}
+## New data frame
+eup_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+eup_desc<- eup_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+  ## initial growth rate of Euplotes from day0 to day 8 
+eup_day0 <- eup[which(eup$day == 0), ]
+eup_day8 <- eup[which(eup$day == 8), ]
+eup_desc$init_growth <- (log(eup_day8$density)-log(eup_day0$density))/8
+
+# day peak
+
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$maxdp[i+ (t-1)*6] <- max(eup$density[which(eup$treatNum == t & eup$rep==i)])
+   }
+} 
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$daypeak[i+ (t-1)*6] <- eup$day[which(eup$density== eup_desc$maxdp[i+ (t-1)*6] & eup$rep==i & eup$treatNum == t)]
+   }
+}
+
+## max abundance 
+eup_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Euplotes) %>% summarize(max = max(Euplotes))
+eup_max <- teb.mean %>% filter(Euplotes %in% eup_max1$max)
+
+eup_desc$max[1:6] <- eup$density[which(eup$day== eup_max$day[1] & eup$treatNum == 1)]
+eup_desc$max[7:12] <- eup$density[which(eup$day== eup_max$day[2] & eup$treatNum == 2)]
+eup_desc$max[13:18] <- eup$density[which(eup$day== eup_max$day[3] & eup$treatNum == 3)]
+eup_desc$max[19:24] <- eup$density[which(eup$day== eup_max$day[4] & eup$treatNum == 4)]
+
+# Coefficient of variation
+eup_desc <- eup%>% group_by( tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean) %>% full_join(eup_desc)
+
+# descriptors mean
+eup.mean_desc <- eup_desc %>% 
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(init_growth),
+            max.m = mean(max), 
+            daypeak.m = mean(daypeak),
+            CV.m = mean(CV))
+```
+
+Data frame looks like:
+
+```{r}
+head(eup_desc)
+```
+
+## Fig 2 a-c Initial growth
+Here is the function to generate interactive plot. 
+
+```{r interactive plot function}
+TEB_interactive <- function(data1,x1,y1,data2,x2,y2,y_label){
+  p <- ggplot(data=data1, aes(x=x1, y=y1, group=temp, shape= tre,colour=tre)) +
+    geom_line(data = data2, aes(x=x2, y=y2), size = 0.6, color = "#c3c3c3") +
+    scale_x_discrete(limits=c("Half","Full")) +
+    labs(y=y_label, x = "Nutrient") +
+    geom_jitter(size = 2, shape = rep(c(1,2),each=12), width = 0.25) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width=0.2, size = 0.5) +
+    geom_point(data = data2, aes(x=x2, y=y2, group=temp, shape=tre, colour=tre), size = 3) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.ticks.length=unit(-0.12, "cm"), axis.text.x = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"),colour = "black"), axis.text.y = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"), colour = "black"),axis.ticks = element_line(colour = "black")) +
+    scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fec398")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+  print(p)
+}
+```
+
+#### Fig 2a Bacteria initial growth
+```{r}
+trt_name <- c(expression(paste("Full 22 ",degree,"C")), expression(paste("Full 25 ",degree,"C")), expression(paste("Half 22 ",degree,"C")),expression(paste("Half 25 ",degree,"C")) )
+
+# Bacteria initial growth
+TEB_interactive(bac_desc,bac_desc$nut,bac_desc$init_growth,bac.mean_desc,bac.mean_desc$nut,bac.mean_desc$ig,"Initial Growth")
+```
+
+#### Fig 2b Tetrahymena initial growth
+```{r}
+# Tetrahymena initial growth
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$tetra.ig,t.mean_desc,t.mean_desc$nut,t.mean_desc$ig,"Initial Growth")
+```
+
+#### Fig 2c Euplotes initial growth
+```{r}
+# Euplotes initial growth
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$init_growth,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$ig,"Initial Growth")
+```
+
+
+## Fig 2 d-f Maximum abundance
+
+#### Fig 2d Bacteria Maximum Abundance
+```{r }
+TEB_interactive2 <- function(data1,x1,y1,data2,x2,y2,y_label){
+  p <- ggplot(data=data1, aes(x=x1, y=y1, group=temp, shape= tre,colour=tre)) +
+     geom_line(data = data2, aes(x=x2, y=y2), size = 0.6, color = "#c3c3c3") +
+    scale_x_discrete(limits=c("Half","Full")) +
+    labs(y=y_label, x = "Nutrient") +
+    geom_jitter(size = 2, shape = rep(c(1,2),c(36,36 )), width = 0.25) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width=0.2, size = 0.5) +
+    geom_point(data = data2, aes(x=x2, y=y2, group=temp, shape=tre, colour=tre), size = 3) +
+    theme_bw() +
+   theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.ticks.length=unit(-0.12, "cm"), axis.text.x = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"),colour = "black"), axis.text.y = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"), colour = "black"),axis.ticks = element_line(colour = "black")) +
+    scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fec398")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+  print(p)
+}
+
+# Bacteria Maximum Abundance
+TEB_interactive2(bac_max,bac_max$nut,bac_max$OD,bac_max_mean,bac_max_mean$nut,bac_max_mean$ODmax,"Maximum Abundance")
+```
+
+#### Fig 2e Tetrahymena Maximum Abundance
+```{r }
+# Tetrahymena Maximum Abundance
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$max,t.mean_desc,t.mean_desc$nut,t.mean_desc$max.m,"Maximum Abundance")
+```
+
+#### Fig 2f Euplotes Maximum Abundance
+```{r }
+# Euplotes Maximum Abundance
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$max,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$max.m,"Maximum Abundance")
+```
+
+## Fig 2 g-i Coefficient of vairation (CV)
+
+#### Fig 2g Bacteria CV
+```{r }
+# Bacteria CV
+TEB_interactive(bac_desc,bac_desc$nut,bac_desc$CV,bac.mean_desc,bac.mean_desc$nut,bac.mean_desc$CV.m,"CV")
+```
+
+#### Fig 2h Tetrahymena CV
+```{r }
+# Tetrahymena CV
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$CV,t.mean_desc,t.mean_desc$nut,t.mean_desc$CV.m,"CV")
+```
+
+#### Fig 2i Euplotes CV
+```{r }
+# Euplotes CV
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$CV,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$CV.m,"CV")
+```
+
+## Fig 2j Day of collapse of Tetrahymena
+```{r day collpase plote}
+# Tetrahymena Time Collapes
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$tc,t.mean_desc,t.mean_desc$nut,t.mean_desc$tc.m,"Day Collapsed") 
+```
+
+## Fig 2k Day of peak of Euplotes
+```{r day peak plot}
+ # Euplotes Day peaking
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$daypeak,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$daypeak.m,"Day Peaked")
+```
+
+# Fig 3 Significant effects of Temperature and nutrients
+
+All the linear models for temperature and nutrients effects can be found in appendix I Table S3 and the code for the models can be found in Rmarkdown file for appendix. Here we added up the significant additive temperature and nutrients effects and their interactions on species initial growh, maximum abundance and CV to plot Figure 3. 
+
+```{r}
+TN_count <- as.data.frame(matrix(c(rep(NA,12) ), 3, 4))
+colnames(TN_count) <- c("species","Temp", "Nut","T*N")
+TN_count[,1] <- c("Bacteria", "Tetrahymena","Euplotes")
+TN_count[1,2:4] <- c(1, 2, 0)
+TN_count[2,2:4] <- c(3, 2, 2)
+TN_count[3,2:4] <- c(2, 3, 2)
+TN_count_ga <-gather(TN_count,key=effects, value = Counts,"Temp", "Nut","T*N" );TN_count_ga
+```
+
+```{r Fig 3}
+ ggplot(data=TN_count_ga, aes(x=species, y=Counts, fill=factor(effects,levels = c("T*N","Nut","Temp")))) +
+  geom_bar(stat="identity", width=0.7)+ 
+  scale_x_discrete(limits = c("Bacteria", "Tetrahymena","Euplotes"))+
+   scale_y_discrete(limits = c(0,3,6,9))+
+  scale_fill_manual(name = "Effects",labels = c("N*T","N", "T"),values=c("#efd3d7" ,"#cbc0d3","#8e9aaf")) +   
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+
+
+# Fig 4 CCM predictability plot between speceices ecological and phenotypic dynamcis
+To quantify the relationship between species ecological dynamics to one another, as well as their ecological dynamic to phenotypic dynamics, we use Congergent Cross Mapping (CCM, Sugihara et al 2012 Nature) to calculate the predictability of one time series to another. CCM can also distinguish between causality and correlation, giving us more understanding about if ecological and phentypic dynamcis are driving one other. 
+
+
+```{r}
+# function to predict tetrahymena, euplotes, and bacteria density from previous selected models
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+
+pred_gam_TEB <- function(treatment,day, length){
+  df <- data.frame(day=seq(0, day,length.out=length), tre=rep(treatment,length))
+  eup_pred <-  exp(predict.gam(em0$gam,df,type = "response", se.fit =T)$fit)-1
+  tetra_pred <-  exp(predict.gam(tm1$gam,df,type = "response", se.fit =T)$fit)-1 
+  bac_pred <- predict.gam(bm2$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(df[, 1], eup_pred, tetra_pred, bac_pred))
+  colnames(pred) <- c("day","eup_pred", "tetra_pred", "bac_pred" )
+  pred
+}
+
+F22gam <- pred_gam_TEB("Full22C",15, 800)
+F25gam <- pred_gam_TEB("Full25C",15, 800)
+H22gam <- pred_gam_TEB("Half22C",15, 800)
+H25gam <- pred_gam_TEB("Half25C",15, 800)
+
+# cropped time series for ecological dynamics
+F22gam_crop <- pred_gam_TEB("Full22C",9, 500)
+F25gam_crop <- pred_gam_TEB("Full25C",9, 500)
+H22gam_crop <- pred_gam_TEB("Half22C",9, 500)
+H25gam_crop <- pred_gam_TEB("Half25C",9, 500)
+
+```
+
+
+```{r}
+# selected gamm model fpr tetrahymena and Euplotes trait
+tt3 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 3))
+et1 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+
+# predict Gamm function for trait
+pred_gam_TEB_trait <- function(day, tModel, eModel, treatment, length, densityData){
+  df <- data.frame(day=seq(0,day,length.out=length), tre=rep(treatment,length))
+  eup_trait <-  predict.gam(eModel$gam,df,type = "response", se.fit =T)$fit
+  tetra_trait <-  predict.gam(tModel$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(densityData,eup_trait,tetra_trait))
+}
+
+# gam fit that goes into CCM
+F22gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Full22C", 800, F22gam)
+F25gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Full25C", 800, F25gam)
+H22gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Half22C", 800, H22gam)
+H25gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Half25C", 800, H25gam)
+
+# Cropped time series for phenotypic dynamics, with cropped predicted ecological dynamics merged
+F22gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Full22C", 500, F22gam_crop)
+F25gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Full25C", 500, F25gam_crop)
+H22gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Half22C", 500, H22gam_crop)
+H25gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Half25C", 500, H25gam_crop)
+```
+
+We wrote two seperate functions for calculating the CCM predictability. All CCM pairs with tetrahymena trait datas, the model fits only include gamm model prediction from day 0 to day 9, since all Tetrahymena populations collaplse around day 9 based on gamm prediction. 
+
+
+```{r trait CCM cropped function}
+# this function only calculate the CCM analysis involve tetrahymena phenotypic dynamics. Here we cropped all the time series involving in these CCM. 
+CCM_TEB_trait_crop <- function(data, Em, libSize, nSamples){
+  E_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "eup_pred" , target = "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "eup_trait" , target = "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  T_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "tetra_pred" , target =  "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Tt_Xmap_B <- CCM(dataFrame=data, E=Em, columns =  "tetra_trait" , target =  "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE)
+
+a <- list( "E_Xmap_Tt" = E_Xmap_Tt[,-3], "Tt_Xmap_E" = E_Xmap_Tt[,-2],  "Et_Xmap_Tt" = Et_Xmap_Tt[,-3], "Tt_Xmap_Et"= Et_Xmap_Tt[,-2], "T_Xmap_Tt" = T_Xmap_Tt[,-3],  "Tt_Xmap_T" = T_Xmap_Tt[,-2], "Tt_Xmap_B" = Tt_Xmap_B[,-3],  "B_Xmap_Tt" = Tt_Xmap_B[,-2])
+}
+
+# this function calculate all the rest CCM pairs that do not involve tetra trait data
+# dateset from model prediction used in this function are different length from the ones used in the previous function
+
+CCM_TEB_trait_full <- function(data, Em, libSize, nSamples){
+  E_Xmap_T <- CCM(dataFrame=data, E=Em, columns ="eup_pred" , target =  "tetra_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  T_Xmap_B <- CCM(dataFrame=data, E=Em, columns ="tetra_pred" , target = "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  E_Xmap_B <- CCM(dataFrame=data, E=Em, columns ="eup_pred" , target = "bac_pred",libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_T <- CCM(dataFrame=data, E=Em, columns ="eup_trait" ,target = "tetra_pred",libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  E_Xmap_Et <- CCM(dataFrame=data, E=Em, columns = "eup_pred", target = "eup_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_B <- CCM(dataFrame=data, E=Em, columns = "eup_trait" , target =  "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE)
+a <- list("E_Xmap_T" = E_Xmap_T[,-3],"T_Xmap_E" = E_Xmap_T[,-2],  "T_Xmap_B" = T_Xmap_B[,-3], "B_Xmap_T" = T_Xmap_B[, -2], "E_Xmap_B" = E_Xmap_B[,-3], "B_Xmap_E"= E_Xmap_B[,-2],"E_Xmap_Et" = E_Xmap_Et[,-3], "Et_Xmap_E" = E_Xmap_Et[,-2], "Et_Xmap_T" = Et_Xmap_T[,-3], "T_Xmap_Et" = Et_Xmap_T[,-2], "Et_Xmap_B" = Et_Xmap_B[,-3],"B_Xmap_Et" = Et_Xmap_B[,-2])
+}
+```
+
+We then calculated the mean CCM predictability from 100 replication. 
+```{r CCM cropped }
+
+# calculating CCM involving tetrahymena trait dynamics, using cropped time series
+F22CCM.area_crop <-CCM_TEB_trait_crop(F22gam.area_crop, 1, seq(10, 80, by = 10),100)
+F25CCM.area_crop <-CCM_TEB_trait_crop(F25gam.area_crop, 1, seq(10, 80, by = 10),100)
+H22CCM.area_crop <-CCM_TEB_trait_crop(H22gam.area_crop, 1, seq(10, 80, by = 10),100)
+H25CCM.area_crop <-CCM_TEB_trait_crop(H25gam.area_crop, 1, seq(10, 80, by = 10),100)
+
+# calculate the rest CCM using full time series
+F22CCM.area <-CCM_TEB_trait_full(F22gam.area, 1, seq(10, 80, by = 10),100)
+F25CCM.area <-CCM_TEB_trait_full(F25gam.area, 1, seq(10, 80, by = 10),100)
+H22CCM.area <-CCM_TEB_trait_full(H22gam.area, 1, seq(10, 80, by = 10),100)
+H25CCM.area <-CCM_TEB_trait_full(H25gam.area, 1, seq(10, 80, by = 10),100)
+```
+
+
+ We then extracted the mean CCM predictability of each pair at the largest library size (libSizes = 80) to fill in the data frame. To do so, we first created a data frame for all of the highest CCM predictability for each CCM test we ran. "E_Xmap_Tt" in "mapping" column means the CCM test for the casual effects of Tetrahymena phenotypic dynamics on Euplotes ecological dynamics. It's a bottom-up, written as "B.up". It tests the effects phenotypic dynamics has on ecological dynamics, thus indicated as "PhenoEco" effects. It is a interaction between Euplotes and Tetrahymena, thus "ET" as species pair. For "pair" column, "T" denotes Tetrahymena, "E" denotes Euplotes, "B" for bacteria,and  "Tetra" and "Eup" stands for the effects of one species' ecological dynamics on its on phenotypic dynamics or vice versa. 
+ 
+ The data frame for CCM at largest library length looks like:
+
+```{r}
+# create dataframe to store predictability at largest library size. 
+area.rho.max <- data.frame(mapping = rep(
+  c("E_Xmap_Tt", "Tt_Xmap_E",  "Et_Xmap_Tt", "Tt_Xmap_Et", "T_Xmap_Tt","Tt_Xmap_T", "Tt_Xmap_B",  "B_Xmap_Tt", "E_Xmap_T","T_Xmap_E", "T_Xmap_B", "B_Xmap_T", "E_Xmap_B", "B_Xmap_E","E_Xmap_Et", "Et_Xmap_E", "Et_Xmap_T", "T_Xmap_Et", "Et_Xmap_B","B_Xmap_Et" ),time =4),direc = rep(c("B.up","T.down","B.up","T.down","Single", "Single","B.up","T.down","B.up","T.down","B.up","T.down","B.up","T.down","Single","Single", "B.up","T.down","B.up","T.down"), time = 4), dynamics = rep(c("PhenoEco", "EcoPheno", "PhenoPheno","PhenoPheno","PhenoEco", "EcoPheno","EcoPheno", "PhenoEco", "EcoEco", "EcoEco","EcoEco","EcoEco","EcoEco","EcoEco", "PhenoEco", "EcoPheno","EcoPheno", "PhenoEco","EcoPheno", "PhenoEco"), time = 4),tre = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 20),temp = rep(c("22C", "25C"), each = 20, time = 2),nut =rep(c("Full", "Half"), each = 40),nut2 =rep(c("High", "Low"), each = 40), pair = rep(c("ET","ET","Tetra","BT", "ET", "BT","BE","Eup","ET", "BE"), each = 2, time = 4), rho= rep(NA,80))
+
+# extract predictability at largest library size 80
+for (i in 1:8) {
+  area.rho.max[i,9] <- F22CCM.area_crop[[i]][8,2]
+  area.rho.max[i+20, 9] <- F25CCM.area_crop[[i]][8,2]
+  area.rho.max[i+40, 9] <- H22CCM.area_crop[[i]][8,2]
+  area.rho.max[i+60, 9] <- H25CCM.area_crop[[i]][8,2]
+}
+
+for (i in 1:12) {
+  area.rho.max[i+8,9] <- F22CCM.area[[i]][8,2]
+  area.rho.max[i+28, 9] <- F25CCM.area[[i]][8,2]
+  area.rho.max[i+48, 9] <- H22CCM.area[[i]][8,2]
+  area.rho.max[i+68, 9] <- H25CCM.area[[i]][8,2]
+}
+
+head(area.rho.max)
+``` 
+## Main text figure 4 
+
+```{r ccm interactive, fig.width=6, fig.height=4}
+ggplot(data = area.rho.max, aes(x=nut2, y=rho, group=mapping, color= pair,shape = direc, lty = direc)) + 
+  #geom_hline(yintercept=0.75,color = "#bcbcbc",  size = 0.3) +
+  geom_line(data = area.rho.max, aes(x=nut2, y=rho),size = 0.7) +  
+  geom_point(size =2, strok =1) +
+    scale_x_discrete(limits=c("Low","High")) +
+    labs(y="CCM Predictability", x = "") +
+  facet_wrap(~ dynamics + temp, nrow =2) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black") ) +
+    scale_colour_manual(values=  c("#add0af", "#A997DF", "#FFC857", "#2E4052", "#929084")) +
+    scale_linetype_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(1,3,2)) +
+    scale_shape_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(19, 17, 1)) 
+```
+
+# Fig 5 Strong Interaction between ecological and phenotypic dynamics
+To be conservative and increase the chance of picking up biologically relevant effects, we consider effects whose CCM predictability value was above 0.75 as strong interaction. Here are the 40 strong interactions presented in Figure 5 in the main text. Explanation for the data frame can be found under Fig 4 section. 
+
+```{r}
+StrongInter <- area.rho.max[which(area.rho.max$rho > 0.75),]
+StrongInter
+```
