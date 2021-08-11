@@ -12,4 +12,3 @@ This repository has the following files:
 3) Bacteria OD600 data: bac_OD.csv
 4) R Code that reproduces all analyses presented in the main text: BTE_main_text_code.csv (html version as BTE_main_text_code.html)
 5) R Code that reproduces all analyses presented in the Appendix: BTE_Appendix.csv (html version as BTE_Appendix_clean.html)
-6) 
