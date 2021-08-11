@@ -48,7 +48,7 @@ milou_dens0 <- read.csv("~/Density.csv")
 milou_dens <- milou_dens0  %>% mutate(tre=as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 24), log_density = log(density + 1)) %>% select(-1)  
 tetra <- milou_dens[which(milou_dens$Class=="Tetrahymena"),]
 eup <- milou_dens[which(milou_dens$Class=="Euplotes"),]
-bac0 <- read.csv("~/Milou_bac_OD.csv")
+bac0 <- read.csv("~/bac_OD.csv")
 bac1 <- bac0 %>% mutate(tre = as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 11), temp_num = as.numeric(rep(c(22,25), each = 6, times = 22)), nut_num = as.numeric(rep(c(1,0.5), each = 12, times = 11)))
 ```
 
