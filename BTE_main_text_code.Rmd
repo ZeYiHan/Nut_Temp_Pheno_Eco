@@ -44,11 +44,11 @@ We used log density to standardize the variance in protists density time series.
 ```{r}
 ### data read in------
 ## density 
-milou_dens0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_density.csv")
+milou_dens0 <- read.csv("~/Density.csv")
 milou_dens <- milou_dens0  %>% mutate(tre=as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 24), log_density = log(density + 1)) %>% select(-1) # 
 tetra <- milou_dens[which(milou_dens$Class=="Tetrahymena"),]
 eup <- milou_dens[which(milou_dens$Class=="Euplotes"),]
-bac0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_bac_nColony.csv")
+bac0 <- read.csv("~/bac_nColony.csv")
 bac1 <- bac0 %>% mutate(tre = as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 11), temp_num = as.numeric(rep(c(22,25), each = 6, times = 22)), nut_num = as.numeric(rep(c(1,0.5), each = 12, times = 11)))
 ```
 
@@ -64,7 +64,7 @@ Since after population collapse, Tetrahymena are functionally extinct and so, ev
 
 ```{r }
 ## trait
-t_summ0 <- fread("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_trait_summary.csv")
+t_summ0 <- fread("~/rait_summary.csv")
 t_summ <- t_summ0 %>% mutate(rep = as.character(rep),
          tre = as.factor(tre),temp_num = as.numeric(temp_num), nut_num = as.numeric(nut_num),rep = as.factor(rep), tre = as.factor(tre), all_rep = rep(1:24, time = 24), temp = as.factor(temp), nut = as.factor(nut))
 tetraSumm <- t_summ %>% filter(Class =="Tetrahymena") 
