@@ -1,6 +1,6 @@
 ---
 title: "BTE Appendix Table and Figures"
-author: "Zeyi Han"
+author: "Ze-Yi Han"
 date: "8/11/2021"
 output:
   html_document:
