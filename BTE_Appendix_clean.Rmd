@@ -1,0 +1,1042 @@
+---
+title: "BTE Appendix Table and Figures"
+author: "Zeyi Han"
+date: "5/31/2021"
+output:
+  html_document:
+    fig_caption: yes
+    highlight: pygments
+    theme: spacelab
+    toc: yes
+    toc_depth: 3
+    code_folding: hide
+---
+
+<style>
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Bookman", "Gerogia";
+    color: ##69b3a2
+}
+
+a, a:hover {
+    color: ##b24e00;
+}
+
+pre {
+    font-size: 12px;
+    color: ##546399;
+}
+</style>
+
+
+---
+```{r setup, echo = FALSE}
+### Loadings----
+knitr::opts_chunk$set(eval = TRUE, cache = TRUE, warning=FALSE, message=FALSE,fig.width=6, fig.height=10, fig.align = "center")
+pacman::p_load(ggplot2, psych, reshape2, cowplot,dplyr,tidyr,data.table,readr,mgcv,nlme,broom,rEDM, shape)
+```
+
+# Data 
+
+Data read in
+
+We used log density to standardize the variance in protists density time series. Since in some days, the protists density is 0, and will result -INF by log(), we added 1 to all the density before calculating the log density for model fitting. We minused the 1 after exponentiating the model predictions. 
+```{r}
+### data read in------
+## density 
+milou_dens0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Density.csv")
+milou_dens <- milou_dens0  %>% mutate(tre=as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 24), log_density = log(density + 1)) %>% select(-1)  
+tetra <- milou_dens[which(milou_dens$Class=="Tetrahymena"),]
+eup <- milou_dens[which(milou_dens$Class=="Euplotes"),]
+bac0 <- read.csv("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_bac_OD.csv")
+bac1 <- bac0 %>% mutate(tre = as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 11), temp_num = as.numeric(rep(c(22,25), each = 6, times = 22)), nut_num = as.numeric(rep(c(1,0.5), each = 12, times = 11)))
+```
+
+We calculated the mean and standard variation for bacteria OD after day 5. One data point that is more than 3 standard deviation away from the mean is removed. 
+
+```{r}
+sd <- sd(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+mean <- mean(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+bac <- bac1[-which(bac1$OD > mean+3*sd),]
+```
+
+Since after population collapse, Tetrahymena are functionally extinct and so, even if we occasionally found individual, trait distributions are unreliable. For traits observation made after each Tetrahymena treatment collapsed (once population density became 0 ind/ml) that with less than 10 number of individual, we considered them unreliable and, thus, removed for future analysis. 
+
+```{r }
+## trait
+t_summ0 <- fread("/Users/zeyi/Documents/phd/Projects/Milou/02_Clean_data/Milou_trait_summary.csv")
+t_summ <- t_summ0 %>% mutate(rep = as.character(rep),
+         tre = as.factor(tre),temp_num = as.numeric(temp_num), nut_num = as.numeric(nut_num),rep = as.factor(rep), tre = as.factor(tre), all_rep = rep(1:24, time = 24), temp = as.factor(temp), nut = as.factor(nut))
+tetraSumm <- t_summ %>% filter(Class =="Tetrahymena") 
+eupSummtrait <- t_summ %>% filter(Class =="Euplotes")
+
+# replace NA for tetra trait}
+# Half 22C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Half22C" & tetraSumm$day>10 & tetraSumm$num_ind<10)] <- NA
+# Full 22C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Full22C" & tetraSumm$day>11 & tetraSumm$num_ind<10)] <- NA
+# Half 25C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Half25C" & tetraSumm$day>8 & tetraSumm$num_ind<10)] <- NA
+# Full 25C
+tetraSumm[, 14:20][which(tetraSumm$tre=="Full25C" & tetraSumm$day>8 & tetraSumm$num_ind<10)] <- NA
+
+# trait group mean
+tetraSummMean <- tetraSumm %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9)
+eupSummMean <- eupSummtrait %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9) %>% filter(day <= 9)
+
+# cropped time series for second version of CCM
+tetraSumm_crop <- tetraSumm %>% filter(day <= 9)
+eupSumm_crop <- eupSummtrait %>% filter(day <=9)
+```
+
+
+Calculate mean density of Bacteria, Tetrahymena, and Euplotes
+```{r}
+bac.2 <- bac %>%
+  rename(density = OD) %>% 
+  select(tre:density,treatNum) %>%
+  mutate(temp = as.factor(temp))
+
+teb.all <- milou_dens %>% 
+ select(tre:density,temp_num,-temp,treatNum)  %>%
+  rename(temp = temp_num) %>%
+  mutate(temp = as.factor(temp), nut = as.factor(nut),day = as.numeric(day))%>%
+  full_join(bac.2) %>% 
+  na.omit() %>%
+  group_by(Class,tre,treatNum, nut, temp,day) %>%
+  summarise(mean.d = mean(density),
+            log.d = log(mean.d +1)) %>%
+  mutate(day = as.numeric(day))
+
+teb.mean <- teb.all %>%
+ select(Class:mean.d) %>%
+  spread(key=Class, value = mean.d)
+```
+
+# 1. Appendix I Table S1. Gamm models for Density Data
+
+We used GAMM model to select for the detection of temporal autocorrelation and correctly accounting for that. To do so, we treated replicates as random effects and day and treatment as fixed effects. Temporal autocorrelation was accounted for using Autoregressive Moving Average (ARMA) correlation structure (of orders 1, 2 and 3) using “corARMA” in R package “nlme” to apply in the GAMM models using the ‘nlme’ R package (version 3.1-148). GAMM models smoothed by treatment more closely reproduce the observed dynamics and are thus better suited for the detection autocorrelation in the time series data, as well as for time series analysis using CCM.
+
+## 1.1 Bacteria Density ARMA selection
+
+AR = 2 is the most suitable for Bacteria Density. 
+
+```{r Bac gamm}
+#bac1 <- bac1 %>% mutate(tre = as.factor(tre), temp_num = as.numeric(temp), nut_num = as.numeric(rep(c(1,0.5), each = 12, time = 11 )))
+bm0 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac) 
+summary(bm0$gam)
+
+bm1 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+summary(bm1$gam)
+
+#AR2  
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+summary(bm2$gam)
+
+#AR3
+bm3 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 3)) 
+summary(bm3$gam)
+
+# Comparing model result
+AIC(bm1$lme,bm2$lme,bm3$lme, bm0$lme) 
+```
+
+## 1.2 Tetrahymena Density ARMA selection
+
+We tested gamm models on Tetrahymena as we tested on bacteria. AR = 1 has the lowest AIC. 
+```{r tetra AR(0)}
+# no autocorrelation accounted for
+tm0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = tetra) 
+summary(tm0$gam)
+
+#AR1
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+summary(tm1$gam)
+
+#AR2  
+tm2 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+summary(tm2$gam)
+
+#AR3
+tm3 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 3)) 
+summary(tm3$gam)
+
+# Comparing model result
+AIC(tm0$lme,tm1$lme,tm2$lme,tm3$lme )
+```
+
+
+## 1.3  Euplotes Density ARMA selection
+
+Same models as above. Gamm model without AR structure has the lowest AIC.
+```{r eup AR(0)}
+eup$log_density <- log(eup$density + 1)
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+summary(em0$gam)
+
+#AR1
+em1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = eup, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+summary(em1$gam)
+
+#AR2  
+em2 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+summary(em2$gam)
+
+#AR3
+em3 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = eup, correlation = corARMA(form = ~ day|tre/rep, p = 3)) 
+summary(em3$gam)
+
+# Comparing model result
+anova(em0$lme,em1$lme,em2$lme,em3$lme)
+```
+
+## 1.4 Tetrahymena Area ARMA selection
+
+Same models as above but for Tetrahymena phenotypic data. Gamm model with AR = 3 structure has the lowest AIC.
+```{r tetra area gamm model 1}
+# model with interactive effect from 4 treatments
+# No AR
+tt0 <- gamm(area ~ s(day, by = tre, k =7) + tre ,random = list(rep= ~ 1), data = tetraSumm) 
+summary(tt0$gam)
+# AR = 1
+tt1 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 1))
+summary(tt1$gam)
+# AR = 2
+tt2 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 2))
+summary(tt2$gam)
+# AR = 3
+tt3<- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 3))
+summary(tt3$gam)
+# Model comparison
+AIC(tt0$lme, tt1$lme, tt2$lme, tt3$lme) # pick AR(3) 
+```
+
+
+## 1.5 Euplotes Area ARMA Selection
+
+Same models as above but for Euplotes phenotypic data. Gamm model with AR = 1 structure has the lowest AIC.
+
+```{r eup area gamm, fig.width = 3,fig.height=2}
+# interactive effects from different treatment
+# No AR
+et0 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait) 
+summary(et0$gam)
+# AR = 1
+et1 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+summary(et1$gam)
+# AR = 2
+et2 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+summary(et2$gam)
+# AR = 3
+et3 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 3)) 
+summary(et3$gam)
+
+# model compariton
+AIC(et0$lme,et1$lme,et2$lme,et3$lme ) # pick AR 1
+```
+# 2. Appendix I Table S2. Quantifying temperature and nutrient effects on species temporal ecological and phenotypic dynamics using ARMA GAMM models. 
+ 
+Because we have only two temperature and nutrients levels, we treated them as categorical variables. Here we present model comparison using AICc on models that accounts for all combinations of additive and/or interactive effects temperature and nutrient. We apply the ARMA structure selected in these models. 
+
+## 2.1 Bacteria Density
+
+Model 7 with temperature additive and nutrient interactive effects (nutrients within smooth term) is the most parsimonious model. 
+
+```{r, results = "hide"}
+# 1. Temp additive effect 
+b.od1 <- gamm(OD ~ s(day, k = 10) + temp, random = list(all_rep = ~1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od1$gam)
+
+# 2. Nut additive effect 
+b.od2 <- gamm(OD ~ s(day, k = 10) + nut,random = list(all_rep= ~ 1),correlation = corARMA(form = ~ day|all_rep, p = 2), data = bac)
+summary(b.od2$gam)   # nutrient not significant
+
+# 3. Temp and Nut additive effects 
+b.od3 <- gamm(OD ~ s(day, k = 10) + nut + temp,random = list(all_rep= ~ 1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od3$gam)  # nutrient not significant
+
+# 4. Temp interactive effect ONLY (Temp within smooth term)
+b.od4 <- gamm(OD ~ s(day, by =  temp, k = 10) + temp, random = list(all_rep = ~1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od4$gam)
+
+# 5. Nut interactive effect ONLY (Nut within smooth term)
+b.od5 <- gamm(OD ~ s(day, by =  nut, k = 10) + nut , random = list(all_rep = ~1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od5$gam) 
+
+# 6. Temp interactive + nut additive (Temp within smooth term)
+b.od6 <- gamm(OD ~ s(day, by =  temp, k = 10) + nut+ temp, random = list(all_rep = ~1),correlation = corARMA(form = ~ day|all_rep, p = 2), data = bac)
+summary(b.od6$gam) 
+
+# 7. Nut interactive + temp additive (Nut within smooth term)
+b.od7 <- gamm(OD ~ s(day, by =  nut, k = 10) + temp+ nut, random = list(all_rep = ~1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od7$gam) 
+
+# 8. nut * temp outside of smooth term. 
+b.od8 <- gamm(OD ~ s(day, k = 10) + temp*nut, random = list(all_rep = ~1), correlation = corARMA(form = ~ day|all_rep, p = 2),data = bac)
+summary(b.od8$gam) 
+
+# Model Comparison
+AIC(b.od1$lme, b.od2$lme,b.od3$lme, b.od4$lme,b.od5$lme,b.od6$lme,b.od7$lme, b.od8$lme)
+```
+
+## 2.2 Tetrahymena Density
+
+Model 6 with nutrient additive and temperature interactive effects (temperature within smooth term) is the most parsimonious model. 
+
+```{r, results = "hide"}
+# 1. Temp additive effect
+t.dens1 <- gamm(log_density ~ s(day, k = 10) + temp, random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|temp/all_rep, p = 1))
+summary(t.dens1$gam)
+
+# 2. Nut additive effect 
+t.dens2 <- gamm(log_density ~ s(day, k = 10) + nut,random = list(all_rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|nut/all_rep, p = 1))
+summary(t.dens2$gam)   
+
+# 3. Temp and Nut additive effects 
+t.dens3 <- gamm(log_density ~ s(day, k = 10) + nut + temp,random = list(all_rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(t.dens3$gam)  
+
+# 4. Temp interactive effect ONLY (Temp within smooth term)
+t.dens4 <- gamm(log_density ~ s(day, by =  temp, k = 10) + temp , random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|temp/all_rep, p = 1))
+summary(t.dens4$gam)
+
+# 5. Nut interactive effect ONLY (Nut within smooth term)
+t.dens5 <- gamm(log_density ~ s(day, by =  nut, k = 10) + nut, random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|nut/all_rep, p = 1))
+summary(t.dens5$gam) 
+
+# 6. Temp interactive + nut additive  (Temp within smooth term)
+t.dens6 <- gamm(log_density ~ s(day, by =  temp, k = 10) + nut + temp, random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(t.dens6$gam) 
+
+# 7. Nut interactive + temp additive (Nut within smooth term)
+t.dens7 <- gamm(log_density ~ s(day, by =  nut, k = 10) + temp + nut, random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(t.dens7$gam) 
+
+# 8. temp*nut outside of smooth term
+t.dens8 <- gamm(log_density ~ s(day,  k = 10) + temp*nut, random = list(all_rep = ~1), data = tetra, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(t.dens8$gam) 
+
+# model comparison
+AIC(tm1$lme,t.dens1$lme, t.dens2$lme,t.dens3$lme, t.dens4$lme,t.dens5$lme, t.dens6$lme,t.dens7$lme,t.dens8$lme)
+```
+## 2.3  Euplotes Density
+
+Model 4 with temperature interactive effects only (temperature within smooth term) is the most parsimonious model. 
+
+```{r, results = "hide"}
+# 1. Temp additive effect
+e.dens1 <- gamm(log_density ~ s(day, k = 10) + temp, random = list(all_rep = ~1), data = eup)
+summary(e.dens1$gam)
+
+# 2. Nut additive effect 
+e.dens2 <- gamm(log_density ~ s(day, k = 10) + nut,random = list(all_rep= ~ 1), data = eup)
+summary(e.dens2$gam)   # nutrient not significant
+
+# 3. Temp and Nut additive effects 
+e.dens3 <- gamm(log_density ~ s(day, k = 10) + nut + temp,random = list(all_rep= ~ 1), data = eup)
+summary(e.dens3$gam)  # nutrient not significant
+
+# 4. Temp interactive effect ONLY (Temp within smooth term)
+e.dens4 <- gamm(log_density ~ s(day, by =  temp, k = 10) + temp, random = list(all_rep = ~1), data = eup)
+summary(e.dens4$gam)
+
+# 5. Nut interactive effect ONLY (Nut within smooth term)
+e.dens5 <- gamm(log_density ~ s(day, by =  nut, k = 10) + nut, random = list(all_rep = ~1), data = eup)
+summary(e.dens5$gam) 
+
+# 6. Temp interactive + nut additive (Temp within smooth term)
+e.dens6 <- gamm(log_density ~ s(day, by =  temp, k = 10) + nut + temp, random = list(all_rep = ~1), data = eup)
+summary(e.dens6$gam) # nutrient is not significant, temperature is
+
+# 7. Nut interactive + temp additive (Nut within smooth term)
+e.dens7 <- gamm(log_density ~ s(day, by =  nut, k = 10) + temp+ nut, random = list(all_rep = ~1), data = eup)
+summary(e.dens7$gam) 
+
+# 8. Nut * temp outside of smooth
+e.dens8 <- gamm(log_density ~ s(day, k = 10) + temp*nut, random = list(all_rep = ~1), data = eup)
+summary(e.dens8$gam) 
+
+# Model Comparison
+AIC(e.dens1$lme, e.dens2$lme,e.dens3$lme, e.dens4$lme,e.dens5$lme, e.dens6$lme,e.dens7$lme,e.dens8$lme)
+```
+
+## 2.4 Tetrahymena Area 
+
+Same model as above, but for Tetrahymena phenotypic data.Model 7 with temperature additive and nutrient interactive effects (nutrients within smooth term) has the lowest AIC. 
+
+```{r}
+# 1. Temp additive effect
+t.area1 <- gamm(area ~ s(day, k = 7) + temp, random = list(all_rep = ~1), data = tetraSumm,correlation = corARMA(form = ~ day|temp/all_rep, p = 3))
+summary(t.area1$gam)
+class(tetraSumm$temp)
+# 2. Nut additive effect 
+t.area2 <- gamm(area ~ s(day, k = 7) + nut,random = list(all_rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|nut/all_rep, p = 3))
+summary(t.area2$gam)   
+
+# 3. Temp and Nut additive effects 
+t.area3 <- gamm(area ~ s(day, k = 7) + nut + temp,random = list(all_rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|all_rep, p = 3))
+summary(t.area3$gam)  
+
+# 4. Temp interactive effect ONLY
+t.area4 <- gamm(area ~ s(day, by =  temp, k = 7) + temp, random = list(all_rep = ~1), data = tetraSumm, correlation = corARMA(form = ~ day|temp/all_rep, p = 3))
+summary(t.area4$gam)
+
+# 5. Nut interactive effect ONLY
+t.area5 <- gamm(area ~ s(day, by =  nut, k = 7) + nut, random = list(all_rep = ~1), data = tetraSumm, correlation = corARMA(form = ~ day|nut/all_rep, p = 3))
+summary(t.area5$gam) 
+
+# 6. Temp interactive + nut additive
+t.area6 <- gamm(area ~ s(day, by =  temp, k = 7) + nut + temp, random = list(all_rep = ~1), data = tetraSumm, correlation = corARMA(form = ~ day|all_rep, p = 3))
+summary(t.area6$gam) 
+
+# 7. Nut interactive + temp additive
+t.area7 <- gamm(area ~ s(day, by =  nut, k = 7) + temp + nut, random = list(all_rep = ~1), data = tetraSumm, correlation = corARMA(form = ~ day|all_rep, p =3))
+summary(t.area7$gam) 
+
+# 8. Nut * temp 
+t.area8 <- gamm(area ~ s(day,  k = 7) + temp * nut, random = list(all_rep = ~1), data = tetraSumm, correlation = corARMA(form = ~ day|all_rep, p = 3))
+summary(t.area8$gam)
+
+# model comparison
+AIC(t.area1$lme, t.area2$lme,t.area3$lme, t.area4$lme,t.area5$lme, t.area6$lme,t.area7$lme, t.area8$lme)
+```
+
+## 2.5 Euplotes Area
+
+Same model as above, but for Euplotes phenotypic data. Model 6 with nutrient additive and temperature interactive effects (temperature within smooth term) is the most parsimonious model. 
+```{r}
+# 1. Temp additive effect
+eup.area1 <- gamm(area ~ s(day, k = 9) + temp, random = list(all_rep = ~1), data = eupSummtrait,correlation = corARMA(form = ~ day|temp/all_rep, p = 1))
+summary(eup.area1$gam)
+
+# 2. Nut additive effect 
+eup.area2 <- gamm(area ~ s(day, k = 9) + nut,random = list(all_rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|nut/all_rep, p = 1))
+summary(eup.area2$gam)   
+
+# 3. Temp and Nut additive effects 
+eup.area3 <- gamm(area ~ s(day, k = 9) + nut + temp,random = list(all_rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(eup.area3$gam)  
+
+# 4. Temp interactive effect ONLY
+eup.area4 <- gamm(area ~ s(day, by =  temp, k = 9) + temp, random = list(all_rep = ~1), data = eupSummtrait, correlation = corARMA(form = ~ day|temp/all_rep, p = 1))
+summary(eup.area4$gam)
+
+# 5. Nut interactive effect ONLY
+eup.area5 <- gamm(area ~ s(day, by =  nut, k = 9) + nut, random = list(all_rep = ~1), data = eupSummtrait, correlation = corARMA(form = ~ day|nut/all_rep, p = 1))
+summary(eup.area5$gam) 
+
+# 6. Temp interactive + nut additive
+eup.area6 <- gamm(area ~ s(day, by =  temp, k = 9) + nut + temp, random = list(all_rep = ~1), data = eupSummtrait, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(eup.area6$gam) 
+
+# 7. Nut interactive + temp additive
+eup.area7 <- gamm(area ~ s(day, by =  nut, k = 9) + temp + nut, random = list(all_rep = ~1), data = eupSummtrait, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(eup.area7$gam) 
+
+# 8. nut * temp outside of smooth term
+eup.area8 <- gamm(area ~ s(day, k = 9) + temp *nut, random = list(all_rep = ~1), data = eupSummtrait, correlation = corARMA(form = ~ day|all_rep, p = 1))
+summary(eup.area8$gam) 
+
+# model comparison
+AIC(eup.area1$lme, eup.area2$lme,eup.area3$lme, eup.area4$lme,eup.area5$lme, eup.area6$lme,eup.area7$lme, eup.area8$lme)
+```
+
+
+# 3. Appendix I Table S3. Linear Models for Ecological Dynamics Descriptor
+
+## 3.1 Bacteria OD600 
+
+The following are ecological descriptor calculated for each species. 
+
+```{r bacteria simp desc}
+## New data frame
+bac_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+bac_desc<- bac_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of Bacteria from day0 to day 1
+bac_day0 <- bac[which(bac$day == 0), ]
+bac_day1 <- bac[which(bac$day == 1), ]
+bac_desc$init_growth <- (bac_day1$OD-bac_day0$OD)/8
+
+## max abundance: three days with the top three population density
+bac_max1<- teb.mean%>% group_by(tre,treatNum) %>% select(tre:day,Bacteria) %>% na.omit() %>%  arrange(desc(Bacteria), .by_group = TRUE)%>% slice_max(Bacteria, n=3) 
+
+bm1 <- bac %>% filter(tre == "Full22C", day %in% bac_max1$day[which(bac_max1$tre=="Full22C")])
+bm2 <- bac %>% filter(tre == "Full25C", day %in% bac_max1$day[which(bac_max1$tre=="Full25C")])
+bm3 <- bac %>% filter(tre == "Half22C", day %in% bac_max1$day[which(bac_max1$tre=="Half22C")])
+bm4 <- bac %>% filter(tre == "Half25C", day %in% bac_max1$day[which(bac_max1$tre=="Half25C")])
+
+bac_max <- rbind(bm1, bm2, bm3,bm4) %>% select(tre:temp, OD, -Date) 
+bac_max$nut <- factor(bac_max$nut, levels =  c("Half", "Full"))
+
+# CV
+bac_desc<- bac%>% group_by(tre,rep) %>%na.omit()%>% summarize(sd = sd(OD), meanOD= mean(OD), CV = sd/mean) %>% full_join(bac_desc) 
+
+# mean
+bac.mean_desc <- bac_desc %>% 
+  group_by(tre, nut, temp) %>%
+  na.omit %>%
+  summarise(ig = mean(init_growth),
+            CV.m=mean(CV))
+bac_max_mean <- bac_max %>% group_by(nut, temp,tre) %>% na.omit() %>% summarise(ODmax = mean(OD),ODse = sd(OD))
+```
+
+#### 3.1.1 Bacteria Initial growth Linear Models
+
+```{r bac ig model, results = "hide"}
+b.ig <- lm(init_growth ~ temp , data=bac_desc);summary(b.ig)
+b.ig1 <- lm(init_growth ~ nut, data=bac_desc);summary(b.ig1)
+b.ig2 <- lm(init_growth ~ temp + nut, data=bac_desc);summary(b.ig2) # no significant effect from neither temp nor nut
+b.ig3 <- lm(init_growth ~ temp * nut, data=bac_desc);summary(b.ig3)
+#anova(b.ig, b.ig1,b.ig2, b.ig3)
+AIC(b.ig, b.ig1,b.ig2, b.ig3)
+```
+
+#### 3.1.2 Bacteria Maximum abundance Linear Models
+```{r bac OD model, results = "hide"}
+b.max <- lm(OD ~ temp, bac_max);summary(b.max) # significant temperature effects
+b.max1 <- lm(OD ~ nut, bac_max);summary(b.max1) # Significant nutrient effect
+b.max2 <- lm(OD ~ nut+temp, bac_max);summary(b.max2) # significant nutrient and temp effect
+b.max3 <- lm(OD ~ nut*temp, bac_max);summary(b.max3) # no interaction
+anova(b.max, b.max2,b.max1,b.max3)
+AIC(b.max, b.max1,b.max2,b.max3)
+```
+
+#### 3.1.3 Bacteria Coefficient of variation (CV) Linear Models
+
+```{r bac CV model, results = "hide"}
+# coefficient of variation
+b.cv <- lm(CV ~ temp, data=bac_desc);summary(b.cv) # temp not significant
+b.cv1 <- lm(CV ~ nut, data=bac_desc);summary(b.cv1) # nut significant
+b.cv2<- lm(CV ~ nut+temp, data=bac_desc);summary(b.cv2) # nut significant
+b.cv3 <- lm(CV ~ nut*temp, data=bac_desc);summary(b.cv3) # nut significant
+
+anova(b.cv, b.cv1,b.cv2, b.cv3) # two model significantly different. Interactive model has higher R2
+AIC(b.cv, b.cv1,b.cv2, b.cv3)
+```
+
+
+## 3.2 Tetrahymena 
+
+```{r tetrahymena descriptor}
+# new data frame
+tetra_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+tetra_desc<-tetra_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of tetrahymena from day0 to day 1 
+tetra_day0 <- tetra%>% filter(day==0) %>% select(density)
+tetra_day1 <- tetra%>% filter(day==1) %>% select(density)
+tetra_desc$tetra.ig <- log(tetra_day1$density)-log(tetra_day0$density)
+
+ ## max abundance
+tetra_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Tetrahymena) %>% summarize(max = max(Tetrahymena))
+tetra_max <- teb.mean %>% filter(Tetrahymena %in% tetra_max1$max)
+tetra_desc <- tetra%>% filter(tre %in% tetra_max$tre & day %in% tetra_max$day)%>% select(tre,rep,density) %>% rename(max = density)%>% left_join(tetra_desc)
+
+# CV
+tetra_desc <- tetra%>% group_by(tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean)%>% full_join(tetra_desc)
+
+## time collapse
+tetra_desc <- tetra %>% group_by(tre,rep) %>% filter(density == 0) %>% summarize(tc = min(day)) %>% full_join(tetra_desc)
+# mean collapse time per treatment
+tetra_desc %>% na.omit%>% group_by(tre) %>% summarize(mean_tc = mean(tc))
+
+# mean of the descriptors
+t.mean_desc <- tetra_desc %>%
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(tetra.ig),
+            max.m = mean(max), 
+            CV.m = mean(CV),
+            tc.m = mean(tc)) 
+```
+
+#### 3.2.1 Tetrahymena Initial growth Linear Models
+ 
+```{r tetra ig model,results = "hide"}
+# initial growth
+t.ig <- lm(tetra.ig ~ temp, data=tetra_desc); summary(t.ig) #temp significant
+t.ig1 <- lm(tetra.ig ~ nut, data=tetra_desc); summary(t.ig1)  # nut NOT significant
+t.ig2 <- lm(tetra.ig ~ temp + nut, data=tetra_desc); summary(t.ig2) # significant temp 
+t.ig3 <- lm(tetra.ig ~ temp * nut, data=tetra_desc);summary(t.ig3) # significant temp no interaction
+AIC(t.ig,t.ig1, t.ig2,t.ig3)
+```
+
+#### 3.2.2 Tetrahymena Maximum abundance Linear Models
+
+```{r tetra max abundance model,results = "hide"}
+# max abundance
+t.max <- lm(max ~ temp, data=tetra_desc); summary(t.max)
+t.max1 <- lm(max ~ nut , data=tetra_desc); summary(t.max1)  # significant nutrient
+t.max2 <- lm(max ~ temp + nut, data=tetra_desc); summary(t.max2) # significant nutrient, NO temp
+t.max3 <- lm(max ~ temp * nut, data=tetra_desc); summary(t.max3) # significant temp and nutrient and interactive effect. Best model
+anova(t.max2, t.max1) # model significantly different
+AIC(t.max,t.max1, t.max2,t.max3)
+```
+#### 3.2.3 Tetrahymena Coefficient of variation (CV) Linear Models
+
+```{r tetra CV model,results = "hide"}
+#Coefficient of varitaion
+t.cv <- lm(CV ~ temp, data=tetra_desc);summary(t.cv)
+t.cv1 <- lm(CV ~ nut, data=tetra_desc);summary(t.cv1)
+t.cv2 <- lm(CV ~ nut+temp, data=tetra_desc);summary(t.cv2) # Temp significant. nut p = 0.08
+t.cv3 <- lm(CV ~ nut*temp, data=tetra_desc);summary(t.cv3) # temp, nut and interaction significant, 0.08
+anova(t.cv1, t.cv2) # two model significantly different. interaction model better
+AIC(t.cv, t.cv1,t.cv2, t.cv3)
+```
+
+#### 3.2.4 Tetrahymena Day of population collapse Linear Models
+
+```{r tetra time collapse model,results = "hide"}
+# time extinction/ day of collapse
+tExt <- lm(tc ~ temp, data=tetra_desc); summary(tExt)  # significant Temperature effects
+tExt1 <- lm(tc~  nut, data=tetra_desc);summary(tExt1)
+tExt2 <- lm(tc~ temp + nut, data=tetra_desc);summary(tExt2) 
+tExt3 <- lm(tc~ temp * nut, data=tetra_desc);summary(tExt3)
+anova(tExt1, tExt2)
+AIC(tExt, tExt1, tExt2, tExt3)
+```
+
+## 3.3 Euplotes
+
+```{r Eup descriptor, echo = FALSE}
+## New data frame
+eup_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+eup_desc<- eup_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+  ## initial growth rate of Euplotes from day0 to day 8 
+eup_day0 <- eup[which(eup$day == 0), ]
+eup_day8 <- eup[which(eup$day == 8), ]
+eup_desc$init_growth <- (log(eup_day8$density)-log(eup_day0$density))/8
+
+# day peak
+
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$maxdp[i+ (t-1)*6] <- max(eup$density[which(eup$treatNum == t & eup$rep==i)])
+   }
+} 
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$daypeak[i+ (t-1)*6] <- eup$day[which(eup$density== eup_desc$maxdp[i+ (t-1)*6] & eup$rep==i & eup$treatNum == t)]
+   }
+}
+
+## max abundance 
+eup_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Euplotes) %>% summarize(max = max(Euplotes))
+eup_max <- teb.mean %>% filter(Euplotes %in% eup_max1$max)
+
+eup_desc$max[1:6] <- eup$density[which(eup$day== eup_max$day[1] & eup$treatNum == 1)]
+eup_desc$max[7:12] <- eup$density[which(eup$day== eup_max$day[2] & eup$treatNum == 2)]
+eup_desc$max[13:18] <- eup$density[which(eup$day== eup_max$day[3] & eup$treatNum == 3)]
+eup_desc$max[19:24] <- eup$density[which(eup$day== eup_max$day[4] & eup$treatNum == 4)]
+
+# Coefficient of variation
+eup_desc <- eup%>% group_by( tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean) %>% full_join(eup_desc)
+
+# descriptors mean
+eup.mean_desc <- eup_desc %>% 
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(init_growth),
+            max.m = mean(max), 
+            daypeak.m = mean(daypeak),
+            CV.m = mean(CV))
+```
+
+#### 3.3.1 Euplotes Initial growth Linear Models
+
+```{r eup ig model, results = "hide"}
+# Initial Growth
+e.ig <- lm(init_growth ~ temp, data=eup_desc);summary(e.ig) 
+e.ig1 <- lm(init_growth ~  nut, data=eup_desc);summary(e.ig1) # no nut 
+e.ig2 <- lm(init_growth ~ temp + nut, data=eup_desc);summary(e.ig2) # significant temp
+e.ig3 <- lm(init_growth ~ temp * nut, data=eup_desc);summary(e.ig3) # significant temp, sig nut, and interactive!
+anova(e.ig, e.ig1,e.ig2, e.ig3)
+AIC(e.ig, e.ig1,e.ig2, e.ig3)
+```
+#### 3.3.2 Euplotes Maximum abundance Linear Models
+```{r eup max abund model, results = "hide"}
+# Maximum Abundance 
+e.max <- lm(max ~ temp, data=eup_desc);summary(e.max)
+e.max1 <- lm(max ~ nut, data=eup_desc);summary(e.max1)
+e.max2 <- lm(max ~ nut+temp, data=eup_desc);summary(e.max2)   # significant temp and nut additive
+e.max3 <- lm(max ~ nut*temp, data=eup_desc);summary(e.max3) # no interactive
+anova(e.max2, e.max3)
+AIC(e.max, e.max1, e.max2, e.max3)
+```
+
+#### 3.3.3 Euplotes Coefficient of variation (CV) Linear Models
+
+```{r eup CV model, results = "hide"}
+# coefficient of variation
+e.cv <- lm(CV ~ temp, data=eup_desc);summary(e.cv)
+e.cv1 <- lm(CV ~ nut, data=eup_desc);summary(e.cv1)
+e.cv2 <- lm(CV ~ nut+temp, data=eup_desc);summary(e.cv2) # nut and temp both significant
+e.cv3 <- lm(CV ~ nut*temp, data=eup_desc);summary(e.cv3) # nut, temp and interactive all significant  R2 = 0.7545
+anova(e.cv1, e.cv2) # two model significantly different. interaction model better
+AIC(e.cv,e.cv1, e.cv2,e.cv3)
+```
+#### 3.3.4 Euplotes Day of population peak Linear Models
+
+```{r eup dp model, results = "hide"}
+# day peaked
+e.dp <- lm(daypeak ~ temp, data=eup_desc);summary(e.dp) 
+e.dp1 <- lm(daypeak ~ nut, data=eup_desc);summary(e.dp1) 
+e.dp2 <- lm(daypeak ~ nut+temp, data=eup_desc);summary(e.dp2) # significant temp, no nut
+e.dp3 <- lm(daypeak ~ nut*temp, data=eup_desc);summary(e.dp3) # significant temp, no interavtive nor nut
+anova(e.dp1, e.dp2, e.dp3)
+AIC(e.dp,e.dp1, e.dp2, e.dp3)
+```
+
+# 4. Appendix II Figure S1-14 CCM convergence plot for each species pair
+
+We started by generating GAMM predictions from the selected model as the time series used in CCM test. 
+
+```{r gamm fit density}
+# function to predict tetrahymena, euplotes, and bacteria density from previous selected models
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+
+pred_gam_TEB <- function(treatment,day, length){
+  df <- data.frame(day=seq(0, day,length.out=length), tre=rep(treatment,length))
+  eup_pred <-  exp(predict.gam(em0$gam,df,type = "response", se.fit =T)$fit)-1
+  tetra_pred <-  exp(predict.gam(tm1$gam,df,type = "response", se.fit =T)$fit)-1 
+  bac_pred <- predict.gam(bm2$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(df[, 1], eup_pred, tetra_pred, bac_pred))
+  colnames(pred) <- c("day","eup_pred", "tetra_pred", "bac_pred" )
+  pred
+}
+
+F22gam <- pred_gam_TEB("Full22C",15, 800)
+F25gam <- pred_gam_TEB("Full25C",15, 800)
+H22gam <- pred_gam_TEB("Half22C",15, 800)
+H25gam <- pred_gam_TEB("Half25C",15, 800)
+
+# cropped time series for ecological dynamics
+F22gam_crop <- pred_gam_TEB("Full22C",9, 500)
+F25gam_crop <- pred_gam_TEB("Full25C",9, 500)
+H22gam_crop <- pred_gam_TEB("Half22C",9, 500)
+H25gam_crop <- pred_gam_TEB("Half25C",9, 500)
+
+```
+
+
+```{r}
+# selected gamm model fpr tetrahymena and Euplotes trait
+tt3 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 3))
+et1 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSummtrait, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+
+# predict Gamm function for trait
+pred_gam_TEB_trait <- function(day, tModel, eModel, treatment, length, densityData){
+  df <- data.frame(day=seq(0,day,length.out=length), tre=rep(treatment,length))
+  eup_trait <-  predict.gam(eModel$gam,df,type = "response", se.fit =T)$fit
+  tetra_trait <-  predict.gam(tModel$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(densityData,eup_trait,tetra_trait))
+}
+
+# gam fit that goes into CCM
+F22gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Full22C", 800, F22gam)
+F25gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Full25C", 800, F25gam)
+H22gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Half22C", 800, H22gam)
+H25gam.area <- pred_gam_TEB_trait(15,tt3,et1,"Half25C", 800, H25gam)
+
+# Cropped time series for phenotypic dynamics, with cropped predicted ecological dynamics merged
+F22gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Full22C", 500, F22gam_crop)
+F25gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Full25C", 500, F25gam_crop)
+H22gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Half22C", 500, H22gam_crop)
+H25gam.area_crop <- pred_gam_TEB_trait(9,tt3,et1,"Half25C", 500, H25gam_crop)
+```
+
+There are two seperate functions for calculating the CCM predictability. All CCM pairs with tetrahymena trait datas, the model fits only include gamm model prediction from day 0 to day 9, since all Tetrahymena populations collaplse around day 9 based on gamm prediction. 
+
+```{r trait CCM cropped function}
+# this function only calculate the CCM analysis involve tetrahymena phenotypic dynamics. Here we cropped all the time series involving in these CCM. 
+CCM_TEB_trait_crop <- function(data, Em, libSize, nSamples){
+  E_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "eup_pred" , target = "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "eup_trait" , target = "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  T_Xmap_Tt <- CCM(dataFrame=data, E=Em, columns = "tetra_pred" , target =  "tetra_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Tt_Xmap_B <- CCM(dataFrame=data, E=Em, columns =  "tetra_trait" , target =  "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE)
+
+a <- list( "E_Xmap_Tt" = E_Xmap_Tt[,-3], "Tt_Xmap_E" = E_Xmap_Tt[,-2],  "Et_Xmap_Tt" = Et_Xmap_Tt[,-3], "Tt_Xmap_Et"= Et_Xmap_Tt[,-2], "T_Xmap_Tt" = T_Xmap_Tt[,-3],  "Tt_Xmap_T" = T_Xmap_Tt[,-2], "Tt_Xmap_B" = Tt_Xmap_B[,-3],  "B_Xmap_Tt" = Tt_Xmap_B[,-2])
+}
+
+# this function calculate all the rest CCM pairs that do not involve tetra trait data
+# dateset from model prediction used in this function are different length from the ones used in the previous function
+
+CCM_TEB_trait_full <- function(data, Em, libSize, nSamples){
+  E_Xmap_T <- CCM(dataFrame=data, E=Em, columns ="eup_pred" , target =  "tetra_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  T_Xmap_B <- CCM(dataFrame=data, E=Em, columns ="tetra_pred" , target = "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  E_Xmap_B <- CCM(dataFrame=data, E=Em, columns ="eup_pred" , target = "bac_pred",libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_T <- CCM(dataFrame=data, E=Em, columns ="eup_trait" ,target = "tetra_pred",libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  E_Xmap_Et <- CCM(dataFrame=data, E=Em, columns = "eup_pred", target = "eup_trait", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE) 
+  Et_Xmap_B <- CCM(dataFrame=data, E=Em, columns = "eup_trait" , target =  "bac_pred", libSizes =  libSize,  sample = nSamples, random = TRUE, replacement = TRUE)
+a <- list("E_Xmap_T" = E_Xmap_T[,-3],"T_Xmap_E" = E_Xmap_T[,-2],  "T_Xmap_B" = T_Xmap_B[,-3], "B_Xmap_T" = T_Xmap_B[, -2], "E_Xmap_B" = E_Xmap_B[,-3], "B_Xmap_E"= E_Xmap_B[,-2],"E_Xmap_Et" = E_Xmap_Et[,-3], "Et_Xmap_E" = E_Xmap_Et[,-2], "Et_Xmap_T" = Et_Xmap_T[,-3], "T_Xmap_Et" = Et_Xmap_T[,-2], "Et_Xmap_B" = Et_Xmap_B[,-3],"B_Xmap_Et" = Et_Xmap_B[,-2])
+}
+```
+
+Here are mean CCM predictability calcualted from 100 replication. 
+
+```{r CCM cropped }
+
+# calculating CCM involving tetrahymena trait dynamics, using cropped time series
+F22CCM.area_crop <-CCM_TEB_trait_crop(F22gam.area_crop, 1, seq(10, 80, by = 10),100)
+F25CCM.area_crop <-CCM_TEB_trait_crop(F25gam.area_crop, 1, seq(10, 80, by = 10),100)
+H22CCM.area_crop <-CCM_TEB_trait_crop(H22gam.area_crop, 1, seq(10, 80, by = 10),100)
+H25CCM.area_crop <-CCM_TEB_trait_crop(H25gam.area_crop, 1, seq(10, 80, by = 10),100)
+
+# calculate the rest CCM using full time series
+F22CCM.area <-CCM_TEB_trait_full(F22gam.area, 1, seq(10, 80, by = 10),100)
+F25CCM.area <-CCM_TEB_trait_full(F25gam.area, 1, seq(10, 80, by = 10),100)
+H22CCM.area <-CCM_TEB_trait_full(H22gam.area, 1, seq(10, 80, by = 10),100)
+H25CCM.area <-CCM_TEB_trait_full(H25gam.area, 1, seq(10, 80, by = 10),100)
+```
+
+Here is the function for calculating the CCM predictability n times ("nSamples") with increasing library size. This function is specific used for generating the CCM convergence plot. Due to the low counts for phenotypic data gathered near T. pyriformis population collapse time, GAMM predictions become unreliable. To better quantifying the relationship between T. pyriformis phenotypic dynamics with other species, we only used GAMM prediction from day 0-9 for T. pyriformis phenotypic dynamics. Correspondingly, we only use GAMM prediction from 0-9 for any other time series when paired up with T. pyriformis phenotypic dynamics. Therefore, there is one function desinated for all the pair of CCM test involving T. pyriformis phenotypic dynamics to used the cropped time series from day 0-9. 
+
+```{r}
+# Note: running E_Xmap_Tt <- ccm(..stats_only = FALSE) by itself out of the function is fine. BUT DO NOT VIEW E_Xmap_Tt. It's likely to overload R and abort the session.Check E_Xmap_Tt$CCM1_PredictStat and $CCM2_PredictStat for predictability results
+
+# pairs with Tetrahymena phenotypic daynamics
+ccmTEB_trait_info_crop <- function(data, Em, libSize, nSamples){
+  E_Xmap_Tt <- ccm(data, E=Em, lib_column = "eup_pred" , target_column = "tetra_trait", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  Et_Xmap_Tt <- ccm(data, E=Em, lib_column = "eup_trait" , target_column = "tetra_trait", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  T_Xmap_Tt <- ccm(data, E=Em, lib_column = "tetra_pred" , target_column =  "tetra_trait", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  Tt_Xmap_B <- ccm(data, E=Em, lib_column =  "tetra_trait" , target_column =  "bac_pred", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  a <- list("E_Xmap_Tt" = E_Xmap_Tt$CCM1_PredictStat, "Tt_Xmap_E" = E_Xmap_Tt$CCM2_PredictStat,  "Et_Xmap_Tt" = Et_Xmap_Tt$CCM1_PredictStat, "Tt_Xmap_Et"= Et_Xmap_Tt$CCM2_PredictStat, "T_Xmap_Tt" = T_Xmap_Tt$CCM1_PredictStat,  "Tt_Xmap_T" = T_Xmap_Tt$CCM2_PredictStat, "Tt_Xmap_B" = Tt_Xmap_B$CCM1_PredictStat,  "B_Xmap_Tt" = Tt_Xmap_B$CCM2_PredictStat)
+}
+  
+# pairs that do not involve Tetrahymena phenotypic daynamics
+ccmTEB_trait_info <- function(data, Em, libSize, nSamples){
+  E_Xmap_T <- ccm(data, E=Em, lib_column ="eup_pred" , target_column =  "tetra_pred", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  T_Xmap_B <- ccm(data, E=Em, lib_column ="tetra_pred" , target_column = "bac_pred", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  E_Xmap_B <- ccm(data, E=Em, lib_column ="eup_pred" , target_column = "bac_pred",lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  Et_Xmap_T <- ccm(data, E=Em, lib_column ="eup_trait" ,target_column = "tetra_pred",lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  E_Xmap_Et <- ccm(data, E=Em, lib_column = "eup_pred", target_column = "eup_trait", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+  Et_Xmap_B <- ccm(data, E=Em, lib_column = "eup_trait" , target_column =  "bac_pred", lib_sizes = libSize,  num_samples = nSamples, random_libs = TRUE, replace = TRUE, stats_only = FALSE)
+a <- list("E_Xmap_T" = E_Xmap_T$CCM1_PredictStat, "T_Xmap_E" = E_Xmap_T$CCM2_PredictStat,  "T_Xmap_B" = T_Xmap_B$CCM1_PredictStat, "B_Xmap_T" = T_Xmap_B$CCM2_PredictStat, "E_Xmap_B" = E_Xmap_B$CCM1_PredictStat, "B_Xmap_E"= E_Xmap_B$CCM2_PredictStat,"E_Xmap_Et" = E_Xmap_Et$CCM1_PredictStat, "Et_Xmap_E" = E_Xmap_Et$CCM2_PredictStat, "Et_Xmap_T" = Et_Xmap_T$CCM1_PredictStat, "T_Xmap_Et" = Et_Xmap_T$CCM2_PredictStat, "Et_Xmap_B" = Et_Xmap_B$CCM1_PredictStat,"B_Xmap_Et" = Et_Xmap_B$CCM2_PredictStat)
+}
+
+F22ccmtrait_info1 <- ccmTEB_trait_info_crop(F22gam.area_crop,  1, seq(10, 80, by = 10),100) # changing the library size to 200 doesn't qualitatively change the predictability 
+F25ccmtrait_info1 <- ccmTEB_trait_info_crop(F25gam.area_crop,  1, seq(10, 80, by = 10),100)
+H22ccmtrait_info1 <- ccmTEB_trait_info_crop(H22gam.area_crop,  1, seq(10, 80, by = 10),100)
+H25ccmtrait_info1 <- ccmTEB_trait_info_crop(H25gam.area_crop,  1, seq(10, 80, by = 10),100)
+
+F22ccmtrait_info2 <- ccmTEB_trait_info(F22gam.area,  1, seq(10, 80, by = 10),100) # changing the library size to 200 doesn't qualitatively change the predictability 
+F25ccmtrait_info2 <- ccmTEB_trait_info(F25gam.area,  1, seq(10, 80, by = 10),100)
+H22ccmtrait_info2 <- ccmTEB_trait_info(H22gam.area,  1, seq(10, 80, by = 10),100)
+H25ccmtrait_info2 <- ccmTEB_trait_info(H25gam.area,  1, seq(10, 80, by = 10),100)
+```
+
+## 4.1 Eco-Eco Covergence Plot
+```{r}
+# Half 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H22ccmtrait_info2$E_Xmap_T, ylim = c(0,1),main = "L22 Tetra Eco->Eup Eco ", col = "#cfd3db");lines(H22CCM.area$E_Xmap_T[,1], H22CCM.area$E_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$T_Xmap_E, ylim = c(0,1), main = "L22 Eup Eco->Tetra Eco", col = "#cfd3db");lines(H22CCM.area$T_Xmap_E[,1], H22CCM.area$T_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info2$E_Xmap_B, ylim = c(0,1), main = "L22 Bac Eco-> Eup Eco", col = "#cfd3db");lines(H22CCM.area$E_Xmap_B[,1], H22CCM.area$E_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$B_Xmap_E, ylim = c(0,1), main = "L22 Eup Eco->Bac Eco", col = "#cfd3db");lines(H22CCM.area$B_Xmap_E[,1], H22CCM.area$B_Xmap_E[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info2$T_Xmap_B, ylim = c(0,1), main = "L22 Bac Eco->Tetra Eco", col = "#cfd3db");lines(H22CCM.area$T_Xmap_B[,1], H22CCM.area$T_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$B_Xmap_T, ylim = c(0,1), main = "L22 Tetra Eco->Bac Eco", col = "#cfd3db");lines(H22CCM.area$B_Xmap_T[,1], H22CCM.area$B_Xmap_T[,2], col = "#A997DF", lwd = 2, lty = 2)
+```
+
+```{r}
+# Full 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F22ccmtrait_info2$E_Xmap_T, ylim = c(0,1),main = "F22 Tetra Eco->Eup Eco ", col = "#cfd3db");lines(F22CCM.area$E_Xmap_T[,1], F22CCM.area$E_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$T_Xmap_E, ylim = c(0,1), main = "F22 Eup Eco->Tetra Eco", col = "#cfd3db");lines(F22CCM.area$T_Xmap_E[,1], F22CCM.area$T_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info2$E_Xmap_B, ylim = c(0,1), main = "F22 Bac Eco-> Eup Eco", col = "#cfd3db");lines(F22CCM.area$E_Xmap_B[,1], F22CCM.area$E_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$B_Xmap_E, ylim = c(0,1), main = "F22 Eup Eco->Bac Eco", col = "#cfd3db");lines(F22CCM.area$B_Xmap_E[,1], F22CCM.area$B_Xmap_E[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info2$T_Xmap_B, ylim = c(0,1), main = "F22 Bac Eco->Tetra Eco", col = "#cfd3db");lines(F22CCM.area$T_Xmap_B[,1], F22CCM.area$T_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$B_Xmap_T, ylim = c(0,1), main = "F22 Tetra Eco->Bac Eco", col = "#cfd3db");lines(F22CCM.area$B_Xmap_T[,1], F22CCM.area$B_Xmap_T[,2], col = "#A997DF", lwd = 2, lty = 2)
+```
+
+```{r}
+# Half 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H25ccmtrait_info2$E_Xmap_T, ylim = c(0,1),main = "H25 Tetra Eco->Eup Eco ", col = "#cfd3db");lines(H25CCM.area$E_Xmap_T[,1], H25CCM.area$E_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$T_Xmap_E, ylim = c(0,1), main = "H25 Eup Eco->Tetra Eco", col = "#cfd3db");lines(H25CCM.area$T_Xmap_E[,1], H25CCM.area$T_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info2$E_Xmap_B, ylim = c(0,1), main = "H25 Bac Eco-> Eup Eco", col = "#cfd3db");lines(H25CCM.area$E_Xmap_B[,1], H25CCM.area$E_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$B_Xmap_E, ylim = c(0,1), main = "H25 Eup Eco->Bac Eco", col = "#cfd3db");lines(H25CCM.area$B_Xmap_E[,1], H25CCM.area$B_Xmap_E[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info2$T_Xmap_B, ylim = c(0,1), main = "H25 Bac Eco->Tetra Eco", col = "#cfd3db");lines(H25CCM.area$T_Xmap_B[,1], H25CCM.area$T_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$B_Xmap_T, ylim = c(0,1), main = "H25 Tetra Eco->Bac Eco", col = "#cfd3db");lines(H25CCM.area$B_Xmap_T[,1], H25CCM.area$B_Xmap_T[,2], col = "#A997DF", lwd = 2, lty = 2)
+```
+
+```{r}
+# Full 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F25ccmtrait_info2$E_Xmap_T, ylim = c(0,1),main = "F25 Tetra Eco->Eup Eco ", col = "#cfd3db");lines(F25CCM.area$E_Xmap_T[,1], F25CCM.area$E_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$T_Xmap_E, ylim = c(0,1), main = "F25 Eup Eco->Tetra Eco", col = "#cfd3db");lines(F25CCM.area$T_Xmap_E[,1], F25CCM.area$T_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info2$E_Xmap_B, ylim = c(0,1), main = "F25 Bac Eco-> Eup Eco", col = "#cfd3db");lines(F25CCM.area$E_Xmap_B[,1], F25CCM.area$E_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$B_Xmap_E, ylim = c(0,1), main = "F25 Eup Eco->Bac Eco", col = "#cfd3db");lines(F25CCM.area$B_Xmap_E[,1], F25CCM.area$B_Xmap_E[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info2$T_Xmap_B, ylim = c(0,1), main = "F25 Bac Eco->Tetra Eco", col = "#cfd3db");lines(F25CCM.area$T_Xmap_B[,1], F25CCM.area$T_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$B_Xmap_T, ylim = c(0,1), main = "F25 Tetra Eco->Bac Eco", col = "#cfd3db");lines(F25CCM.area$B_Xmap_T[,1], F25CCM.area$B_Xmap_T[,2], col = "#A997DF", lwd = 2, lty = 2)
+```
+
+## 4.2 Eco-Pheno Covergence Plot
+
+```{r}
+# Half 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H22ccmtrait_info1$Tt_Xmap_E, ylim = c(0,1),main = "H22 Eup Eco->Tetra Pheno ", col = "#cfd3db");lines(H22CCM.area_crop$Tt_Xmap_E[,1], H22CCM.area_crop$Tt_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info2$Et_Xmap_T, ylim = c(0,1), main = "H22 Tetra Eco-> Eup Pheno", col = "#cfd3db");lines(H22CCM.area$Et_Xmap_T[,1], H22CCM.area$Et_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$Et_Xmap_B, ylim = c(0,1), main = "H22 Bac Eco-> Eup Pheno", col = "#cfd3db");lines(H22CCM.area$Et_Xmap_B[,1], H22CCM.area$Et_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info1$Tt_Xmap_B, ylim = c(0,1), main = "H22 Bac Eco-> Tetra Pheno", col = "#cfd3db");lines(H22CCM.area_crop$Tt_Xmap_B[,1], H22CCM.area_crop$Tt_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$Et_Xmap_E, ylim = c(0,1), main = "H22 Eup Eco-> Eup Pheno", col = "#cfd3db");lines(H22CCM.area$Et_Xmap_E[,1], H22CCM.area$Et_Xmap_E[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, H22ccmtrait_info1$Tt_Xmap_T, ylim = c(0,1), main = "H22 Tetra Eco-> Tetra Pheno", col = "#cfd3db");lines(H22CCM.area_crop$Tt_Xmap_T[,1], H22CCM.area_crop$Tt_Xmap_T[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+
+```{r}
+# Full 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F22ccmtrait_info1$Tt_Xmap_E, ylim = c(0,1),main = "F22 Eup Eco->Tetra Pheno ", col = "#cfd3db");lines(F22CCM.area_crop$Tt_Xmap_E[,1], F22CCM.area_crop$Tt_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info2$Et_Xmap_T, ylim = c(0,1), main = "F22 Tetra Eco-> Eup Pheno", col = "#cfd3db");lines(F22CCM.area$Et_Xmap_T[,1], F22CCM.area$Et_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$Et_Xmap_B, ylim = c(0,1), main = "F22 Bac Eco-> Eup Pheno", col = "#cfd3db");lines(F22CCM.area$Et_Xmap_B[,1], F22CCM.area$Et_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info1$Tt_Xmap_B, ylim = c(0,1), main = "F22 Bac Eco-> Tetra Pheno", col = "#cfd3db");lines(F22CCM.area_crop$Tt_Xmap_B[,1], F22CCM.area_crop$Tt_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$Et_Xmap_E, ylim = c(0,1), main = "F22 Eup Eco-> Eup Pheno", col = "#cfd3db");lines(F22CCM.area$Et_Xmap_E[,1], F22CCM.area$Et_Xmap_E[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, F22ccmtrait_info1$Tt_Xmap_T, ylim = c(0,1), main = "F22 Tetra Eco-> Tetra Pheno", col = "#cfd3db");lines(F22CCM.area_crop$Tt_Xmap_T[,1], F22CCM.area_crop$Tt_Xmap_T[,2], col = "#929084", lwd = 2, lty = 3)
+```
+```{r}
+# Half 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H25ccmtrait_info1$Tt_Xmap_E, ylim = c(0,1),main = "H25 Eup Eco->Tetra Pheno ", col = "#cfd3db");lines(H25CCM.area_crop$Tt_Xmap_E[,1], H25CCM.area_crop$Tt_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info2$Et_Xmap_T, ylim = c(0,1), main = "H25 Tetra Eco-> Eup Pheno", col = "#cfd3db");lines(H25CCM.area$Et_Xmap_T[,1], H25CCM.area$Et_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$Et_Xmap_B, ylim = c(0,1), main = "H25 Bac Eco-> Eup Pheno", col = "#cfd3db");lines(H25CCM.area$Et_Xmap_B[,1], H25CCM.area$Et_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info1$Tt_Xmap_B, ylim = c(0,1), main = "H25 Bac Eco-> Tetra Pheno", col = "#cfd3db");lines(H25CCM.area_crop$Tt_Xmap_B[,1], H25CCM.area_crop$Tt_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$Et_Xmap_E, ylim = c(0,1), main = "H25 Eup Eco-> Eup Pheno", col = "#cfd3db");lines(H25CCM.area$Et_Xmap_E[,1], H25CCM.area$Et_Xmap_E[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, H25ccmtrait_info1$Tt_Xmap_T, ylim = c(0,1), main = "H25 Tetra Eco-> Tetra Pheno", col = "#cfd3db");lines(H25CCM.area_crop$Tt_Xmap_T[,1], H25CCM.area_crop$Tt_Xmap_T[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+```{r}
+# Full 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F25ccmtrait_info1$Tt_Xmap_E, ylim = c(0,1),main = "F25 Eup Eco->Tetra Pheno ", col = "#cfd3db");lines(F25CCM.area_crop$Tt_Xmap_E[,1], F25CCM.area_crop$Tt_Xmap_E[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info2$Et_Xmap_T, ylim = c(0,1), main = "F25 Tetra Eco-> Eup Pheno", col = "#cfd3db");lines(F25CCM.area$Et_Xmap_T[,1], F25CCM.area$Et_Xmap_T[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$Et_Xmap_B, ylim = c(0,1), main = "F25 Bac Eco-> Eup Pheno", col = "#cfd3db");lines(F25CCM.area$Et_Xmap_B[,1], F25CCM.area$Et_Xmap_B[,2], col = "#add0af", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info1$Tt_Xmap_B, ylim = c(0,1), main = "F25 Bac Eco-> Tetra Pheno", col = "#cfd3db");lines(F25CCM.area_crop$Tt_Xmap_B[,1], F25CCM.area_crop$Tt_Xmap_B[,2], col = "#A997DF", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$Et_Xmap_E, ylim = c(0,1), main = "F25 Eup Eco-> Eup Pheno", col = "#cfd3db");lines(F25CCM.area$Et_Xmap_E[,1], F25CCM.area$Et_Xmap_E[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, F25ccmtrait_info1$Tt_Xmap_T, ylim = c(0,1), main = "F25 Tetra Eco-> Tetra Pheno", col = "#cfd3db");lines(F25CCM.area_crop$Tt_Xmap_T[,1], F25CCM.area_crop$Tt_Xmap_T[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+
+## 4.3 Pheno-Eco Covergence Plot
+
+```{r}
+# Half 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H22ccmtrait_info1$E_Xmap_Tt, ylim = c(0,1),main = "H22 Tetra Pheno-> Eup Eco", col = "#cfd3db");lines(H22CCM.area_crop$E_Xmap_Tt[,1], H22CCM.area_crop$E_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info2$T_Xmap_Et, ylim = c(0,1), main = "H22 Eup Pheno-> Tetra Eco", col = "#cfd3db");lines(H22CCM.area$T_Xmap_Et[,1], H22CCM.area$T_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info2$B_Xmap_Et, ylim = c(0,1), main = "H22 Eup Pheno-> Bac Eco", col = "#cfd3db");lines(H22CCM.area$B_Xmap_Et[,1], H22CCM.area$B_Xmap_Et[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info1$B_Xmap_Tt, ylim = c(0,1), main = "H22 Tetra Pheno-> Bac Eco", col = "#cfd3db");lines(H22CCM.area_crop$B_Xmap_Tt[,1], H22CCM.area_crop$B_Xmap_Tt[,2], col = "#A997DF", lwd = 2, lty = 2)
+plot(rho~LibSize, H22ccmtrait_info2$E_Xmap_Et, ylim = c(0,1), main = "H22 Eup Pheno-> Eup Eco", col = "#cfd3db");lines(H22CCM.area$E_Xmap_Et[,1], H22CCM.area$E_Xmap_Et[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, H22ccmtrait_info1$T_Xmap_Tt, ylim = c(0,1), main = "H22 Tetra Pheno-> Tetra Eco", col = "#cfd3db");lines(H22CCM.area_crop$T_Xmap_Tt[,1], H22CCM.area_crop$T_Xmap_Tt[,2], col = "#929084", lwd = 2, lty = 3)
+```
+```{r}
+# Full 22C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F22ccmtrait_info1$E_Xmap_Tt, ylim = c(0,1),main = "F22 Tetra Pheno-> Eup Eco", col = "#cfd3db");lines(F22CCM.area_crop$E_Xmap_Tt[,1], F22CCM.area_crop$E_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info2$T_Xmap_Et, ylim = c(0,1), main = "F22 Eup Pheno-> Tetra Eco", col = "#cfd3db");lines(F22CCM.area$T_Xmap_Et[,1], F22CCM.area$T_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info2$B_Xmap_Et, ylim = c(0,1), main = "F22 Eup Pheno-> Bac Eco", col = "#cfd3db");lines(F22CCM.area$B_Xmap_Et[,1], F22CCM.area$B_Xmap_Et[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info1$B_Xmap_Tt, ylim = c(0,1), main = "F22 Tetra Pheno-> Bac Eco", col = "#cfd3db");lines(F22CCM.area_crop$B_Xmap_Tt[,1], F22CCM.area_crop$B_Xmap_Tt[,2], col = "#A997DF", lwd = 2, lty = 2)
+plot(rho~LibSize, F22ccmtrait_info2$E_Xmap_Et, ylim = c(0,1), main = "F22 Eup Pheno-> Eup Eco", col = "#cfd3db");lines(F22CCM.area$E_Xmap_Et[,1], F22CCM.area$E_Xmap_Et[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, F22ccmtrait_info1$T_Xmap_Tt, ylim = c(0,1), main = "F22 Tetra Pheno-> Tetra Eco", col = "#cfd3db");lines(F22CCM.area_crop$T_Xmap_Tt[,1], F22CCM.area_crop$T_Xmap_Tt[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+```{r}
+# Half 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, H25ccmtrait_info1$E_Xmap_Tt, ylim = c(0,1),main = "H25 Tetra Pheno-> Eup Eco", col = "#cfd3db");lines(H25CCM.area_crop$E_Xmap_Tt[,1], H25CCM.area_crop$E_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info2$T_Xmap_Et, ylim = c(0,1), main = "H25 Eup Pheno-> Tetra Eco", col = "#cfd3db");lines(H25CCM.area$T_Xmap_Et[,1], H25CCM.area$T_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info2$B_Xmap_Et, ylim = c(0,1), main = "H25 Eup Pheno-> Bac Eco", col = "#cfd3db");lines(H25CCM.area$B_Xmap_Et[,1], H25CCM.area$B_Xmap_Et[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info1$B_Xmap_Tt, ylim = c(0,1), main = "H25 Tetra Pheno-> Bac Eco", col = "#cfd3db");lines(H25CCM.area_crop$B_Xmap_Tt[,1], H25CCM.area_crop$B_Xmap_Tt[,2], col = "#A997DF", lwd = 2, lty = 2)
+plot(rho~LibSize, H25ccmtrait_info2$E_Xmap_Et, ylim = c(0,1), main = "H25 Eup Pheno-> Eup Eco", col = "#cfd3db");lines(H25CCM.area$E_Xmap_Et[,1], H25CCM.area$E_Xmap_Et[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, H25ccmtrait_info1$T_Xmap_Tt, ylim = c(0,1), main = "H25 Tetra Pheno-> Tetra Eco", col = "#cfd3db");lines(H25CCM.area_crop$T_Xmap_Tt[,1], H25CCM.area_crop$T_Xmap_Tt[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+```{r}
+# Full 25C
+par(mfrow = c(3,2))
+plot(rho~LibSize, F25ccmtrait_info1$E_Xmap_Tt, ylim = c(0,1),main = "F25 Tetra Pheno-> Eup Eco", col = "#cfd3db");lines(F25CCM.area_crop$E_Xmap_Tt[,1], F25CCM.area_crop$E_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info2$T_Xmap_Et, ylim = c(0,1), main = "F25 Eup Pheno-> Tetra Eco", col = "#cfd3db");lines(F25CCM.area$T_Xmap_Et[,1], F25CCM.area$T_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info2$B_Xmap_Et, ylim = c(0,1), main = "F25 Eup Pheno-> Bac Eco", col = "#cfd3db");lines(F25CCM.area$B_Xmap_Et[,1], F25CCM.area$B_Xmap_Et[,2], col = "#add0af", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info1$B_Xmap_Tt, ylim = c(0,1), main = "F25 Tetra Pheno-> Bac Eco", col = "#cfd3db");lines(F25CCM.area_crop$B_Xmap_Tt[,1], F25CCM.area_crop$B_Xmap_Tt[,2], col = "#A997DF", lwd = 2, lty = 2)
+plot(rho~LibSize, F25ccmtrait_info2$E_Xmap_Et, ylim = c(0,1), main = "F25 Eup Pheno-> Eup Eco", col = "#cfd3db");lines(F25CCM.area$E_Xmap_Et[,1], F25CCM.area$E_Xmap_Et[,2], col = "#2E4052", lwd = 2, lty = 3)
+plot(rho~LibSize, F25ccmtrait_info1$T_Xmap_Tt, ylim = c(0,1), main = "F25 Tetra Pheno-> Tetra Eco", col = "#cfd3db");lines(F25CCM.area_crop$T_Xmap_Tt[,1], F25CCM.area_crop$T_Xmap_Tt[,2], col = "#929084", lwd = 2, lty = 3)
+```
+
+
+## 4.4 Pheno-Pheno
+
+```{r}
+# Half 22C and Full 22C
+par(mfrow = c(2,2))
+plot(rho~LibSize, H22ccmtrait_info1$Et_Xmap_Tt, ylim = c(0,1),main = "H22 Tetra Pheno-> Eup Pheno", col = "#cfd3db");lines(H22CCM.area_crop$Et_Xmap_Tt[,1], H22CCM.area_crop$Et_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H22ccmtrait_info1$Tt_Xmap_Et, ylim = c(0,1),main = "H22 Eup Pheno-> Tetra Pheno", col = "#cfd3db");lines(H22CCM.area_crop$Tt_Xmap_Et[,1], H22CCM.area_crop$Tt_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+
+plot(rho~LibSize, F22ccmtrait_info1$Et_Xmap_Tt, ylim = c(0,1),main = "F22 Tetra Pheno-> Eup Pheno", col = "#cfd3db");lines(F22CCM.area_crop$Et_Xmap_Tt[,1], F22CCM.area_crop$Et_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F22ccmtrait_info1$Tt_Xmap_Et, ylim = c(0,1),main = "F22 Eup Pheno-> Tetra Pheno", col = "#cfd3db");lines(F22CCM.area_crop$Tt_Xmap_Et[,1], F22CCM.area_crop$Tt_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+```
+
+```{r}
+# Half 25C and Full 25C
+par(mfrow = c(2,2))
+plot(rho~LibSize, H25ccmtrait_info1$Et_Xmap_Tt, ylim = c(0,1),main = "H25 Tetra Pheno-> Eup Pheno", col = "#cfd3db");lines(H25CCM.area_crop$Et_Xmap_Tt[,1], H25CCM.area_crop$Et_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, H25ccmtrait_info1$Tt_Xmap_Et, ylim = c(0,1),main = "H25 Eup Pheno-> Tetra Pheno", col = "#cfd3db");lines(H25CCM.area_crop$Tt_Xmap_Et[,1], H25CCM.area_crop$Tt_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+
+plot(rho~LibSize, F25ccmtrait_info1$Et_Xmap_Tt, ylim = c(0,1),main = "F25 Tetra Pheno-> Eup Pheno", col = "#cfd3db");lines(F25CCM.area_crop$Et_Xmap_Tt[,1], F25CCM.area_crop$Et_Xmap_Tt[,2], col = "#FFC857", lwd = 2)
+plot(rho~LibSize, F25ccmtrait_info1$Tt_Xmap_Et, ylim = c(0,1),main = "F25 Eup Pheno-> Tetra Pheno", col = "#cfd3db");lines(F25CCM.area_crop$Tt_Xmap_Et[,1], F25CCM.area_crop$Tt_Xmap_Et[,2], col = "#FFC857", lwd = 2, lty = 2)
+
+```
+
+# 5. Appendix II Table S1 Mean CCM Prediction at Largest Library Size by Temperature
+Here we create a data frame for all of the highest CCM predictability for each CCM test we ran. We then extracted the mean CCM predictability of each pair at the largest library size (libSizes = 80) to fill in the data frame. "E_Xmap_Tt" in "mapping" column means the CCM test for the casual effects of Tetrahymena phenotypic dynamics on Euplotes ecological dynamics. It's a bottom-up, written as "B.up". It tests the effects phenotypic dynamics has on ecological dynamics, thus indicated as "PhenoEco" effects. It is a interaction between Euplotes and Tetrahymena, thus "ET" as species pair. For "pair" column, "T" denotes Tetrahymena, "E" denotes Euplotes, "B" for bacteria,and  "Tetra" and "Eup" stands for the effects of one species' ecological dynamics on its on phenotypic dynamics or vise versa. 
+
+```{r}
+# create dataframe to store predictability at largest library size. 
+area.rho.max <- data.frame(mapping = rep(
+  c("E_Xmap_Tt", "Tt_Xmap_E",  "Et_Xmap_Tt", "Tt_Xmap_Et", "T_Xmap_Tt","Tt_Xmap_T", "Tt_Xmap_B",  "B_Xmap_Tt", "E_Xmap_T","T_Xmap_E", "T_Xmap_B", "B_Xmap_T", "E_Xmap_B", "B_Xmap_E","E_Xmap_Et", "Et_Xmap_E", "Et_Xmap_T", "T_Xmap_Et", "Et_Xmap_B","B_Xmap_Et" ),time =4),direc = rep(c("B.up","T.down","B.up","T.down","Single", "Single","B.up","T.down","B.up","T.down","B.up","T.down","B.up","T.down","Single","Single", "B.up","T.down","B.up","T.down"), time = 4), dynamics = rep(c("PhenoEco", "EcoPheno", "PhenoPheno","PhenoPheno","PhenoEco", "EcoPheno","EcoPheno", "PhenoEco", "EcoEco", "EcoEco","EcoEco","EcoEco","EcoEco","EcoEco", "PhenoEco", "EcoPheno","EcoPheno", "PhenoEco","EcoPheno", "PhenoEco"), time = 4),tre = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 20),temp = rep(c("22C", "25C"), each = 20, time = 2),nut =rep(c("Full", "Half"), each = 40),nut2 =rep(c("High", "Low"), each = 40), pair = rep(c("ET","ET","Tetra","BT", "ET", "BT","BE","Eup","ET", "BE"), each = 2, time = 4), rho= rep(NA,80))
+
+# extract predictability at largest library size 80
+for (i in 1:8) {
+  area.rho.max[i,9] <- F22CCM.area_crop[[i]][8,2]
+  area.rho.max[i+20, 9] <- F25CCM.area_crop[[i]][8,2]
+  area.rho.max[i+40, 9] <- H22CCM.area_crop[[i]][8,2]
+  area.rho.max[i+60, 9] <- H25CCM.area_crop[[i]][8,2]
+}
+
+for (i in 1:12) {
+  area.rho.max[i+8,9] <- F22CCM.area[[i]][8,2]
+  area.rho.max[i+28, 9] <- F25CCM.area[[i]][8,2]
+  area.rho.max[i+48, 9] <- H22CCM.area[[i]][8,2]
+  area.rho.max[i+68, 9] <- H25CCM.area[[i]][8,2]
+}
+
+head(area.rho.max)
+``` 
+
+Here is the average CCM prediactability accross species pair within each temperature treatment. 
+```{r}
+# mean rho for temp
+rho.mean.temp<- area.rho.max %>%  group_by(dynamics, temp) %>% summarise(avg_rho = mean(rho))
+rho.mean.temp
+```
+
+# 6. Appendix III Table S1 All Strong Interaction in the FW
+To be conservative and increase the chance of picking up biologically relevant effects, we consider effects whose CCM predictability value was above 0.75 as strong interaction. Here are the 40 strong interactions presented in Figure 5 in the main text the Appendix III Fig S1. 
+
+```{r}
+StrongInter <- area.rho.max[which(area.rho.max$rho > 0.75),]
+StrongInter
+```
+
+
+
