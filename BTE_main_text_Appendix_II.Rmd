@@ -1,0 +1,1614 @@
+---
+title: "BTE Main Text Figures"
+author: "Ze-Yi Han"
+date: "6/14/2021"
+output:
+  html_document:
+    fig_caption: yes
+    highlight: pygments
+    theme: spacelab
+    toc: yes
+    toc_depth: 3
+    code_folding: show
+---
+
+<style>
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Bookman", "Gerogia";
+    color: ##69b3a2
+}
+
+a, a:hover {
+    color: ##b24e00;
+}
+
+pre {
+    font-size: 12px;
+    color: ##546399;
+}
+</style>
+
+
+---
+```{r setup, echo = FALSE}
+### Loadings----
+knitr::opts_chunk$set(eval = TRUE, cache = TRUE, warning=FALSE, message=FALSE,fig.width=6, fig.height=4, fig.align = "center")
+pacman::p_load(ggplot2, psych, reshape2, cowplot,dplyr,tidyr,data.table,readr,mgcv,nlme,broom,rEDM, shape,stringr,multispatialCCM,parallel)
+```
+
+# Date read in
+
+We used log density to standardize the variance in protists density time series. Since in some days, the protists density is 0, and will result -INF by log(), we added 1 to all the density before calculating the log density for model fitting. We minused the 1 after exponentiating the model predictions. 
+```{r}
+### data read in------
+## density 
+milou_dens0 <- read.csv("/Users/zeyihan/Documents/PhD/Projects/Milou/02_Clean_data/Milou_density.csv")
+milou_dens <- milou_dens0  %>% mutate(tre=as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 24), log_density = log(density + 1)) %>% select(-1)  
+tetra <- milou_dens[which(milou_dens$Class=="Tetrahymena"),]
+eup <- milou_dens[which(milou_dens$Class=="Euplotes"),]
+bac0 <- read.csv("/Users/zeyihan/Documents/PhD/Projects/Milou/02_Clean_data/Milou_bac_OD.csv")
+bac1 <- bac0 %>% mutate(tre = as.factor(tre), temp = as.factor(temp), nut = as.factor(nut), all_rep = rep(1:24, time = 11), temp_num = as.numeric(rep(c(22,25), each = 6, times = 22)), nut_num = as.numeric(rep(c(1,0.5), each = 12, times = 11)))
+```
+
+We calculated the mean and standard variation for bacteria OD after day 5. One data point that is more than 3 standard deviation away from the mean is removed. 
+
+```{r}
+sd <- sd(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+mean <- mean(bac1$OD[which(bac1$day > 5)], na.rm = TRUE)
+bac <- bac1[-which(bac1$OD > mean+3*sd),]
+```
+
+```{r, echo=FALSE}
+## trait
+t_summ0 <- fread("/Users/zeyihan/Documents/PhD/Projects/Milou/02_Clean_data/Milou_trait_summary.csv")
+t_summ <- t_summ0 %>% as.data.frame() %>% mutate(rep = as.character(rep),
+         tre = as.factor(tre),temp_num = as.numeric(temp_num), nut_num = as.numeric(nut_num),rep = as.factor(rep), tre = as.factor(tre), all_rep = rep(1:24, time = 24), temp = as.factor(temp), nut = as.factor(nut))
+tetraSumm <- t_summ %>% filter(Class =="Tetrahymena") 
+eupSumm <- t_summ %>% filter(Class =="Euplotes")
+```
+
+Because after population collapse, Tetrahymena are functionally extinct and so, even if we occasionally found individual, trait distributions are unreliable. For traits observation made after each Tetrahymena treatment collapsed (once population density became 0 ind/ml) that with less than 10 number of individual, we considered them unreliable and, thus, removed for future analysis. For time series analysis, we only used Tetrahymena trait data from day 0-9 since the analysis we used required equal-length time series. 
+
+```{r, echo=FALSE}
+# replace NA for tetra trait based on average Tetrahymena population collapse time
+# Half 22C
+tetraSumm[which(tetraSumm$tre=="Half22C" & tetraSumm$day>10 & tetraSumm$num_ind<10), 14:20] <- NA
+# Full 22C
+tetraSumm[which(tetraSumm$tre=="Full22C" & tetraSumm$day>11 & tetraSumm$num_ind<10), 14:20] <- NA
+# Half 25C
+tetraSumm[which(tetraSumm$tre=="Half25C" & tetraSumm$day>8 & tetraSumm$num_ind<10), 14:20] <- NA
+# Full 25C
+tetraSumm[which(tetraSumm$tre=="Full25C" & tetraSumm$day>8 & tetraSumm$num_ind<10), 14:20] <- NA
+
+# trait group mean
+tetraSummMean <- tetraSumm %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9)
+eupSummMean <- eupSumm %>% na.omit %>% group_by(Class,temp,nut,tre,day) %>% summarise(mArea = mean(area)) %>% filter(day <= 9) %>% filter(day <= 9)
+
+# cropped time series for second version of CCM
+tetraSumm_crop <- tetraSumm %>% filter(day <= 9)
+eupSumm_crop <- eupSumm %>% filter(day <=9)
+```
+# Figure 1 
+
+Calculate mean density of Bacteria, Tetrahymena, and Euplotes
+```{r}
+bac.2 <- bac %>%
+  rename(density = OD) %>% 
+  select(tre:density,treatNum) %>%
+  mutate(temp = as.factor(temp))
+
+teb.all <- milou_dens %>% 
+ select(tre:density,temp_num,-temp,treatNum)  %>%
+  rename(temp = temp_num) %>%
+  mutate(temp = as.factor(temp), nut = as.factor(nut),day = as.numeric(day))%>%
+  full_join(bac.2) %>% 
+  na.omit() %>%
+  group_by(Class,tre,treatNum, nut, temp,day) %>%
+  summarise(mean.d = mean(density),
+            log.d = log(mean.d +1)) %>%
+  mutate(day = as.numeric(day))
+
+teb.mean <- teb.all %>%
+ select(Class:mean.d) %>%
+  spread(key=Class, value = mean.d)
+```
+
+
+## Fig 1a. Overall average ecological dynamics
+
+```{r Fig 1a combine plot data}
+dens1 <- tetra %>% group_by(day) %>% summarise(tetra = log(mean(density+1)), t.err = sd(density+1)/sqrt(24), t.err.log = log(t.err))
+d.eup <- eup %>% group_by(day) %>% summarise(eup = log(mean(density+1)), eup.err = sd(density+1)/sqrt(24), eup.err.log = log(eup.err) ) 
+dens2 <- right_join(dens1,d.eup)
+d.bac <- bac %>% group_by(day) %>% na.omit() %>% summarise(bac = mean(OD), bac.err = sd(OD)/sqrt(24)) 
+dens <- full_join(dens2,d.bac)
+```
+
+```{r TEB combine plot, fig.width=6, fig.height=4}
+# Tetrahymena and Euplotes average abundance
+par(mar = c(5,5,2,5),tcl = 0.5)
+with(dens, plot(day, tetra, type="o",pch=3, cex =2, lwd = 4,col="#818181", ylab="Tetrahymena/Euplotes Abundance", ylim=c(0,12), axes = F))
+axis(side = 1,las=1,cex.axis=1.5,lwd = 2)
+axis(side = 2,las=1,cex.axis=1.5,lwd = 2)
+lines(dens$day,dens$eup, col = "black", lwd = 4) #lty = 2
+points(dens$day,dens$eup, col = "black", pch =4, cex =2,lwd = 4)
+# Bacteria average OD
+par(new = T,tcl = -0.5)
+with(dens, plot(day,bac, type="o", col ="#bcbcbc", cex=2, ylim=c(0, 0.03), lwd = 4, pch = 8,axes=F, xlab=NA, ylab=NA)) 
+axis(side = 4, at = c(0, 0.01,0.02, 0.03),las=1,cex.axis=1.5,lwd = 2)
+mtext(side = 4, 'Bacteria OD')
+```
+
+## Fig 1b-d. Gamm fits for the ecological dynamics
+Based on model comparison (Supplementray Table X), we used the Generalized Additive Mixed Models (GAMM) with 4 treatments for all species for both ecological and phenotypic dynamics. 
+
+```{r}
+# Bacteria ecological dyanmics
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+# Tetrahymena ecological dynamics
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+# Euplotes ecological dynamics
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+
+# function to predict tetrahymena, euplotes, and bacteria density from previous selected models
+em0 <- gamm(log_density ~ s(day, by = tre, k =10) + tre,random = list(rep= ~ 1), data = eup) 
+tm1 <- gamm(log_density ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = tetra, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+bm2 <- gamm(OD ~ s(day, by = tre, k =10) + tre ,random = list(rep= ~ 1), data = bac, correlation = corARMA(form = ~ day|tre/rep, p = 2)) 
+
+pred_gam_TEB <- function(treatment,day, length){
+  df <- data.frame(day=seq(0, day,length.out=length), tre=rep(treatment,length))
+  eup_pred <-  exp(predict.gam(em0$gam,df,type = "response", se.fit =T)$fit)-1
+  tetra_pred <-  exp(predict.gam(tm1$gam,df,type = "response", se.fit =T)$fit)-1 
+  bac_pred <- predict.gam(bm2$gam,df,type = "response", se.fit =T)$fit
+  pred <- as.data.frame(cbind(df[, 1], eup_pred, tetra_pred, bac_pred))
+  colnames(pred) <- c("day","eup_pred", "tetra_pred", "bac_pred" )
+  pred
+}
+
+F22gam <- pred_gam_TEB("Full22C",15, 800)
+F25gam <- pred_gam_TEB("Full25C",15, 800)
+H22gam <- pred_gam_TEB("Half22C",15, 800)
+H25gam <- pred_gam_TEB("Half25C",15, 800)
+
+gam_all <- rbind(F22gam,F25gam,H22gam,H25gam) %>% 
+  mutate(tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 800),
+         temp = rep(c(22,25,22,25), each=800),
+         nut = rep(c("Full", "Half"), each=1600),
+         day=rep(seq(0,15,length.out=800),4)) 
+gam_gather <- gam_all%>%
+  gather(key = "Class", value = "density", eup_pred, tetra_pred , bac_pred)
+```
+
+#### Fig 1b Bacteria overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+trt_name <- c(expression(paste("Full 22 ",degree,"C")),expression(paste("Half 22 ",degree,"C")), expression(paste("Full 25 ",degree,"C")),expression(paste("Half 25 ",degree,"C")) )
+
+# Bacteria
+ggplot(data = bac, aes(x=day,y=OD,group = temp,shape = tre,colour = tre))+ 
+  geom_line(data = gam_all, aes(x=day,y=bac_pred,group = tre, colour = tre), size = 0.8)+ 
+  geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1c Tetrahymena overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+# Tetrahymena
+ggplot(data = tetra, aes(x=day,y=density,group = temp,shape = tre,colour = tre))+ 
+  geom_line(data = gam_all, aes(x=day,y=tetra_pred,group = tre, colour = tre), size = 0.8)+  
+  geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1d Euplotes overall ecological dynamics
+```{r , fig.width=6, fig.height=4}
+# Euplotes
+ggplot(data = eup, aes(x=day,y=density,group = temp,shape = tre,colour = tre)) +
+  geom_line(data = gam_all, aes(x=day,y=eup_pred,group = tre, colour = tre), size = 0.8)+ 
+geom_jitter(size = 1.5, width = 0.7)+
+  scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+
+```
+
+## Fig 1e-f GAMM fits for phenotypic dynamics of Tetrahymena and Euplotes
+
+#### Fig 1e Tetrahymena overall phenotypic dynamics
+
+```{r Fig 1e Tetrahymena phenotypic dynamics GAMM}
+tt3 <- gamm(area ~ s(day, by = tre, k =7) + tre,random = list(rep= ~ 1), data = tetraSumm, correlation = corARMA(form = ~ day|tre/rep, p = 3))
+ttgam <- data.frame(day=rep(seq(0,9,length.out=500), 4), tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 500, 4))  
+ttgam$tetra <-  predict.gam(tt3$gam,ttgam,type = "response", se.fit =T)$fit
+
+ggplot(ttgam, aes(x=day, y=tetra, color = tre, shape = tre))+ geom_line(width = 2) +
+  geom_jitter(data= tetraSumm, aes(x=day, y = area, color=tre),size = 1.3, jitter = 0.7)+
+  #geom_vline(xintercept=9,color = "#000000",  size = 0.3)+
+   scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.15, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+#### Fig 1f Euplotes overall phenotypic dynamics
+
+```{r Fig 1f Euplotes phenotypic dynamics GAMM, fig.width=6, fig.height=4}
+# make days with number of individal less than 10 as NA
+#eupSumm$area[which(eupSumm$num_ind < 11)] <- NA
+
+et1 <- gamm(area ~ s(day, by=tre, k =9) + tre,random = list(rep= ~ 1), data = eupSumm, correlation = corARMA(form = ~ day|tre/rep, p = 1)) 
+etgam <- data.frame(day=rep(seq(0,15,length.out=1000), 4), tre=rep(c("Full22C", "Full25C", "Half22C", "Half25C"),each = 1000, 4))  
+etgam$eup<-  predict.gam(et1$gam,etgam,type = "response", se.fit =T)$fit
+
+ggplot(etgam, aes(x=day, y=eup, color = tre, shape = tre))+ geom_line(width = 2) +
+  geom_jitter(data= eupSumm, aes(x=day, y = area, color=tre),size = 1.3, jitter = 0.7)+
+   scale_colour_manual(name = "Treatment",labels = trt_name,values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment", labels = trt_name, values = c(19, 19, 17, 17))+
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.15, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+# Fig 2 Interactive plot of temperature and nutrients effects on ecological dynamics
+
+## Descriptors for Species Ecological Dynamics
+
+The following are ecological dynamics descriptor calculated for each species. 
+
+#### 1. Bacteria ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+
+```{r bacteria simp desc}
+## New data frame
+bac_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+bac_desc<- bac_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of Bacteria from day0 to day 1
+bac_day0 <- bac[which(bac$day == 0), ]
+bac_day1 <- bac[which(bac$day == 1), ]
+bac_desc$init_growth <- (bac_day1$OD-bac_day0$OD)/8
+
+## max abundance: three days with the top three population density
+bac_max1<- teb.mean%>% group_by(tre,treatNum) %>% select(tre:day,Bacteria) %>% na.omit() %>%  arrange(desc(Bacteria), .by_group = TRUE)%>% slice_max(Bacteria, n=3) 
+
+bm1 <- bac %>% filter(tre == "Full22C", day %in% bac_max1$day[which(bac_max1$tre=="Full22C")])
+bm2 <- bac %>% filter(tre == "Full25C", day %in% bac_max1$day[which(bac_max1$tre=="Full25C")])
+bm3 <- bac %>% filter(tre == "Half22C", day %in% bac_max1$day[which(bac_max1$tre=="Half22C")])
+bm4 <- bac %>% filter(tre == "Half25C", day %in% bac_max1$day[which(bac_max1$tre=="Half25C")])
+
+bac_max <- rbind(bm1, bm2, bm3,bm4) %>% select(tre:temp, OD, -Date) 
+bac_max$nut <- factor(bac_max$nut, levels =  c("Half", "Full"))
+
+# CV
+bac_desc<- bac%>% group_by(tre,rep) %>%na.omit()%>% summarize(sd = sd(OD), meanOD= mean(OD), CV = sd/mean) %>% full_join(bac_desc) 
+
+# mean
+bac.mean_desc <- bac_desc %>% 
+  group_by(tre, nut, temp) %>%
+  na.omit %>%
+  summarise(ig = mean(init_growth),
+            CV.m=mean(CV))
+bac_max_mean <- bac_max %>% group_by(nut, temp,tre) %>% na.omit() %>% summarise(ODmax = mean(OD),ODse = sd(OD))
+```
+
+The data frames for bacteria initial growth and coefficient of variation (CV) looks like: 
+
+```{r}
+head(bac_desc)
+```
+
+We used the top three observed OD600 values for each replicate from each treatment for bacteria as their maximun abundance because their population dynamics remained relatively stable.The dataframe looks like:
+```{r}
+head(bac_max_mean)
+```
+
+
+
+#### 2. Tetrahymena ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+ + Day of population collapse
+ 
+```{r tetrahymena descriptor}
+# new data frame
+tetra_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+tetra_desc<-tetra_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+## initial growth rate of tetrahymena from day0 to day 1 
+tetra_day0 <- tetra%>% filter(day==0) %>% select(density)
+tetra_day1 <- tetra%>% filter(day==1) %>% select(density)
+tetra_desc$tetra.ig <- log(tetra_day1$density)-log(tetra_day0$density)
+
+ ## max abundance
+tetra_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Tetrahymena) %>% summarize(max = max(Tetrahymena))
+tetra_max <- teb.mean %>% filter(Tetrahymena %in% tetra_max1$max)
+tetra_desc <- tetra%>% filter(tre %in% tetra_max$tre & day %in% tetra_max$day)%>% select(tre,rep,density) %>% rename(max = density)%>% left_join(tetra_desc)
+
+# CV
+tetra_desc <- tetra%>% group_by(tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean)%>% full_join(tetra_desc)
+
+## time collapse
+tetra_desc <- tetra %>% group_by(tre,rep) %>% filter(density == 0) %>% summarize(tc = min(day)) %>% full_join(tetra_desc)
+
+# mean of the descriptors
+t.mean_desc <- tetra_desc %>%
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(tetra.ig),
+            max.m = mean(max), 
+            CV.m = mean(CV),
+            tc.m = mean(tc)) 
+```
+Data frame looks like:
+
+```{r}
+head(tetra_desc)
+```
+
+
+#### 3. Euplotes ecological dynamics descriptor
+ + Initial growth
+ + Maximum abundance
+ + Coefficient of variation (CV)
+ + Day of population peak
+
+```{r Eup descriptor, echo = FALSE}
+## New data frame
+eup_desc <- data.frame("tre" = rep(c("Full22C", "Full25C", "Half22C", "Half25C"), each = 6))
+eup_desc<- eup_desc %>%
+  mutate(temp = as.factor(rep(c(22,25), each=6, times=2)), 
+         nut = factor(rep(c("Full","Half"), each=12), levels = c("Half", "Full")), 
+         rep = rep(1:6, times = 4))
+
+  ## initial growth rate of Euplotes from day0 to day 8 
+eup_day0 <- eup[which(eup$day == 0), ]
+eup_day8 <- eup[which(eup$day == 8), ]
+eup_desc$init_growth <- (log(eup_day8$density)-log(eup_day0$density))/8
+
+# day peak
+
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$maxdp[i+ (t-1)*6] <- max(eup$density[which(eup$treatNum == t & eup$rep==i)])
+   }
+} 
+for (i in 1:6){
+for(t in 1:4) {
+   eup_desc$daypeak[i+ (t-1)*6] <- eup$day[which(eup$density== eup_desc$maxdp[i+ (t-1)*6] & eup$rep==i & eup$treatNum == t)]
+   }
+}
+
+## max abundance 
+eup_max1 <- teb.mean %>% group_by(tre,treatNum) %>% select(tre:day,Euplotes) %>% summarize(max = max(Euplotes))
+eup_max <- teb.mean %>% filter(Euplotes %in% eup_max1$max)
+
+eup_desc$max[1:6] <- eup$density[which(eup$day== eup_max$day[1] & eup$treatNum == 1)]
+eup_desc$max[7:12] <- eup$density[which(eup$day== eup_max$day[2] & eup$treatNum == 2)]
+eup_desc$max[13:18] <- eup$density[which(eup$day== eup_max$day[3] & eup$treatNum == 3)]
+eup_desc$max[19:24] <- eup$density[which(eup$day== eup_max$day[4] & eup$treatNum == 4)]
+
+# Coefficient of variation
+eup_desc <- eup%>% group_by( tre,rep) %>% summarize(sd = sd(density), mean= mean(density), CV = sd/mean) %>% full_join(eup_desc)
+
+# descriptors mean
+eup.mean_desc <- eup_desc %>% 
+  group_by(tre, nut, temp) %>%
+  summarise(ig = mean(init_growth),
+            max.m = mean(max), 
+            daypeak.m = mean(daypeak),
+            CV.m = mean(CV))
+```
+
+Data frame looks like:
+
+```{r}
+head(eup_desc)
+```
+
+## Fig 2 a-c Initial growth
+Here is the function to generate interactive plot. 
+
+```{r interactive plot function}
+TEB_interactive <- function(data1,x1,y1,data2,x2,y2,y_label){
+  p <- ggplot(data=data1, aes(x=x1, y=y1, group=temp, shape= tre,colour=tre)) +
+    geom_line(data = data2, aes(x=x2, y=y2), size = 0.6, color = "#c3c3c3") +
+    scale_x_discrete(limits=c("Half","Full")) +
+    labs(y=y_label, x = "Nutrient") +
+    geom_jitter(size = 2, shape = rep(c(1,2),each=12), width = 0.25) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width=0.2, size = 0.5) +
+    geom_point(data = data2, aes(x=x2, y=y2, group=temp, shape=tre, colour=tre), size = 3) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.ticks.length=unit(-0.12, "cm"), axis.text.x = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"),colour = "black"), axis.text.y = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"), colour = "black"),axis.ticks = element_line(colour = "black")) +
+    scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fec398")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+  print(p)
+}
+```
+
+#### Fig 2a Bacteria initial growth
+```{r}
+trt_name <- c(expression(paste("Full 22 ",degree,"C")), expression(paste("Full 25 ",degree,"C")), expression(paste("Half 22 ",degree,"C")),expression(paste("Half 25 ",degree,"C")) )
+
+# Bacteria initial growth
+TEB_interactive(bac_desc,bac_desc$nut,bac_desc$init_growth,bac.mean_desc,bac.mean_desc$nut,bac.mean_desc$ig,"Initial Growth")
+```
+
+#### Fig 2b Tetrahymena initial growth
+```{r}
+# Tetrahymena initial growth
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$tetra.ig,t.mean_desc,t.mean_desc$nut,t.mean_desc$ig,"Initial Growth")
+```
+
+#### Fig 2c Euplotes initial growth
+```{r}
+# Euplotes initial growth
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$init_growth,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$ig,"Initial Growth")
+```
+
+
+## Fig 2 d-f Maximum abundance
+
+#### Fig 2d Bacteria Maximum Abundance
+```{r }
+TEB_interactive2 <- function(data1,x1,y1,data2,x2,y2,y_label){
+  p <- ggplot(data=data1, aes(x=x1, y=y1, group=temp, shape= tre,colour=tre)) +
+     geom_line(data = data2, aes(x=x2, y=y2), size = 0.6, color = "#c3c3c3") +
+    scale_x_discrete(limits=c("Half","Full")) +
+    labs(y=y_label, x = "Nutrient") +
+    geom_jitter(size = 2, shape = rep(c(1,2),c(36,36 )), width = 0.25) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width=0.2, size = 0.5) +
+    geom_point(data = data2, aes(x=x2, y=y2, group=temp, shape=tre, colour=tre), size = 3) +
+    theme_bw() +
+   theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),axis.ticks.length=unit(-0.12, "cm"), axis.text.x = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"),colour = "black"), axis.text.y = element_text(margin=unit(c(0.25,0.25,0.25,0.25), "cm"), colour = "black"),axis.ticks = element_line(colour = "black")) +
+    scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fec398")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+  print(p)
+}
+
+# Bacteria Maximum Abundance
+TEB_interactive2(bac_max,bac_max$nut,bac_max$OD,bac_max_mean,bac_max_mean$nut,bac_max_mean$ODmax,"Maximum Abundance")
+```
+
+#### Fig 2e Tetrahymena Maximum Abundance
+```{r }
+# Tetrahymena Maximum Abundance
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$max,t.mean_desc,t.mean_desc$nut,t.mean_desc$max.m,"Maximum Abundance")
+```
+
+#### Fig 2f Euplotes Maximum Abundance
+```{r }
+# Euplotes Maximum Abundance
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$max,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$max.m,"Maximum Abundance")
+```
+
+## Fig 2 g-i Coefficient of vairation (CV)
+
+#### Fig 2g Bacteria CV
+```{r }
+# Bacteria CV
+TEB_interactive(bac_desc,bac_desc$nut,bac_desc$CV,bac.mean_desc,bac.mean_desc$nut,bac.mean_desc$CV.m,"CV")
+```
+
+#### Fig 2h Tetrahymena CV
+```{r }
+# Tetrahymena CV
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$CV,t.mean_desc,t.mean_desc$nut,t.mean_desc$CV.m,"CV")
+```
+
+#### Fig 2i Euplotes CV
+```{r }
+# Euplotes CV
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$CV,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$CV.m,"CV")
+```
+
+## Fig 2j Day of collapse of Tetrahymena
+```{r day collpase plote}
+# Tetrahymena Time Collapes
+TEB_interactive(tetra_desc,tetra_desc$nut,tetra_desc$tc,t.mean_desc,t.mean_desc$nut,t.mean_desc$tc.m,"Day Collapsed") 
+```
+
+## Fig 2k Day of peak of Euplotes
+```{r day peak plot}
+ # Euplotes Day peaking
+TEB_interactive(eup_desc,eup_desc$nut,eup_desc$daypeak,eup.mean_desc,eup.mean_desc$nut,eup.mean_desc$daypeak.m,"Day Peaked")
+```
+
+# Fig 3 Significant effects of Temperature and nutrients
+
+All the linear models for temperature and nutrients effects can be found in appendix I Table S3 and the code for the models can be found in Rmarkdown file for appendix. Here we added up the significant additive temperature and nutrients effects and their interactions on species initial growh, maximum abundance and CV to plot Figure 3. 
+
+```{r, results='hide'}
+TN_count <- as.data.frame(matrix(c(rep(NA,12) ), 3, 4))
+colnames(TN_count) <- c("species","Temp", "Nut","T*N")
+TN_count[,1] <- c("Bacteria", "Tetrahymena","Euplotes")
+TN_count[1,2:4] <- c(1, 2, 0)
+TN_count[2,2:4] <- c(3, 2, 2)
+TN_count[3,2:4] <- c(2, 3, 2)
+TN_count_ga <-gather(TN_count,key=effects, value = Counts,"Temp", "Nut","T*N" );TN_count_ga
+```
+
+```{r Fig 3}
+ ggplot(data=TN_count_ga, aes(x=species, y=Counts, fill=factor(effects,levels = c("T*N","Nut","Temp")))) +
+  geom_bar(stat="identity", width=0.7)+ 
+  scale_x_discrete(limits = c("Bacteria", "Tetrahymena","Euplotes"))+
+   scale_y_discrete(limits = c(0,3,6,9))+
+  scale_fill_manual(name = "Effects",labels = c("N*T","N", "T"),values=c("#efd3d7" ,"#cbc0d3","#8e9aaf")) +   
+  theme_bw()+theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"), axis.ticks.length=unit(-0.2, "cm"), axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+
+
+# Fig 4 CCM predictability plot between speceices ecological and phenotypic dynamcis
+# 4.1 Interpolation Using Three Different Methods
+
+### 4.1.1 approx (linear interpolation)
+
+##### 4.1.1.1 Density data
+
+Here we generate linear interpolation prediction for the density of all three species. First, we defined a function to interpolate by treatment and by replication.
+
+```{r, results='hide'}
+linearapprox <- function(data,Yvar, tre.vector, rep.vector,daycolnum,ycolnum,x_out){
+  total_ap <- data.frame()
+  for (i in tre.vector){
+  for(j in rep.vector){
+  ap <- as.data.frame(approx(data$day[which(data$treatNum== i & data$rep == j)], Yvar[which(data$treatNum== i & data$rep == j)], xout = x_out,method = "linear", rule = 1, f= 0))
+d <- data[which(data$treatNum== i & data$rep == j),c(daycolnum,ycolnum)] 
+colnames(d) <- c("x", "y")
+t<- rbind(ap,d) 
+t$treatNum <- rep(c(i), n = 16)
+t$rep <- rep(c(j), n = 16)
+t <- t %>% arrange(x)
+mCCM_nas <- as.data.frame(matrix(rep(c(16,NA,i,j,17,NA,i,j)),byrow = T,nrow = 2 )) # NAs added here for multispcaial CCM analysis formatting. Each time series should be spererated by two NAs. See instruction for "SSR_pred_boot" function
+colnames(mCCM_nas) <- c("x", "y", "treatNum","rep")
+t2 <- rbind(t,mCCM_nas)
+total_ap <- rbind(total_ap, t2)
+    }
+  }
+colnames(total_ap) <- c("day", "density", "treatNum","rep")
+total_ap$density[total_ap$density < 0] = 0  #***** all the negative prediction are replace by 0!
+print(total_ap)
+}
+```
+
+We then interpolate all the missing data.
+
+```{r, results='hide'}
+tetra_approx <- linearapprox(tetra, tetra$density, c(1:4), c(1:6), 3,8, c(5:6, 12:13)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("tetra", 432)))
+eup_approx <- linearapprox(eup, eup$density, c(1:4), c(1:6), 3,8,c(5:6, 12:13)) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", 432)))
+bac_approx <- linearapprox(bac, bac$OD, c(1:4), c(1:5), 4,9,c(5:6, 12:13)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("bac", 339)))
+# all species
+all_approx <- rbind(tetra_approx, eup_approx, bac_approx)
+# plot
+trt_name = c(expression(paste("Full22 ",degree,"C")),expression(paste("Full25 ",degree,"C")), expression(paste("Half22 ",degree,"C")),expression(paste("Half25 ",degree,"C")))
+```
+
+Here are the ecological time serieses with linear interpolation for all species. 
+```{r,fig.width=12, fig.height=4}
+ggplot(data = all_approx, aes(x=day, y=density, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+
+```
+##### 4.1.1.2 Trait data
+
+Now we use linear interpolation to predict the trait data of both protist species on missing days. Because of the low density of Euplotes in the beginning of the experiment, there are days where we detected no Euplotes in our samples, thus no trait data were recorded. Here we also interpolate trait values for those days to prevent NAs in the time series (multispacial CCM) analysis later on. 
+
+```{r, results='hide'}
+# Interpolation for the missing days, day 5,6,12,13
+t.t_app <- linearapprox(tetraSumm, tetraSumm$area, c(1:4), c(1:6), 4,15,c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("tetra", 432)))
+colnames(t.t_app) <- c("day","area", "treatNum", "rep","species" )
+
+e.t_app <- linearapprox(eupSumm, eupSumm$area, c(1:4), c(1:6), 4,15,c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", 432)))
+colnames(e.t_app) <- c("day","area", "treatNum", "rep","species" )
+
+#  Selecting missing trait data of Euplotes for linear interpolation
+e.t.na <- e.t_app[is.na(e.t_app$area),c(1,3,4)] %>% filter(!day %in% c(17,18)) # row for day 17, 18 were added for multispacial CCM analysis data format only (each time series is seperated by two NAs).Details see instruction for "SSR_pred_boot" function
+
+# interpolation missing trait data of Euplotes
+for (i in 1:nrow(e.t.na)){
+  d <- approx(eupSumm$day[which(eupSumm$treatNum== e.t.na[i,2] & eupSumm$rep == e.t.na[i,3])], eupSumm$area[which(eupSumm$treatNum== e.t.na[i,2] & eupSumm$rep == e.t.na[i,3])], xout = e.t.na[i,1], method = "linear", rule = 1, f= 0)
+  e.t_app$area[which(e.t_app$treatNum == e.t.na[i,2] & e.t_app$rep == e.t.na[i,3] & e.t_app$day == e.t.na[i,1])] <- d$y
+}
+```
+
+
+Here are T.pyriformis and Eupltoes sp. phenotypic dynamics with linear interpolation. 
+
+```{r,fig.width=8, fig.height=4}
+trait_app <- rbind(t.t_app, e.t_app)
+ggplot(data = trait_app, aes(x=day, y=area, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+```
+
+
+### 4.1.2 spline
+
+##### 4.1.2.1 Density data
+
+As before, here we define function to interpolate missing data with spline.
+```{r}
+require(stats)
+intpl_spline <- function(data,Yvar, tre.vector, rep.vector,daycolnum,denscolnum){
+  total_sp <- data.frame()
+  for (i in tre.vector){
+  for(j in rep.vector){
+  sp1 <- as.data.frame(spline(data$day[which(data$treatNum== i & data$rep == j)], Yvar[which(data$treatNum== i & data$rep == j)], method ="fmm", n = 2,xmin = 5, xmax = 6))
+  sp2 <- as.data.frame(spline(data$day[which(data$treatNum== i & data$rep == j)], Yvar[which(data$treatNum== i & data$rep == j)], method ="fmm", n = 2,xmin = 12, xmax = 13))
+d <- data[which(data$treatNum== i & data$rep == j),c(daycolnum,denscolnum)] 
+colnames(d) <- c("x", "y")
+t<- rbind(sp1,d) %>% rbind(.,sp2)
+t$treatNum <- rep(c(i), n = 16)
+t$rep <- rep(c(j), n = 16)
+t <- t %>% arrange(x)
+mCCM_nas <- as.data.frame(matrix(rep(c(16,NA,i,j,17,NA,i,j)),byrow = T,nrow = 2 ))
+colnames(mCCM_nas) <- c("x", "y", "treatNum","rep")
+t2 <- rbind(t,mCCM_nas)
+total_sp <- rbind(total_sp, t2)
+    }
+  }
+colnames(total_sp) <- c("day", "density", "treatNum","rep")
+total_sp$density[total_sp$density < 0] = 0  #***** all the negative prediction are replace by 0!
+print(total_sp)
+}
+```
+
+Then we predict all the missing data in species ecological dynamics as in section 4.1.1 but with spline interpolation. 
+
+```{r, results='hide'}
+tetra_spline <- intpl_spline(tetra, tetra$density, c(1:4), c(1:6), 3,8) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("tetra", 432)))
+eup_spline <- intpl_spline(eup, eup$density, c(1:4), c(1:6), 3,8) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", 432)))
+bac_spline <- intpl_spline(bac, bac$OD, c(1:4), c(1:5), 4,9) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("bac", 339)))
+# all species
+all_spline <- rbind(tetra_spline, eup_spline, bac_spline)
+```
+
+Here are the species ecological dynamics with spline interpolation.
+```{r,fig.width=12, fig.height=4}
+ggplot(data = all_spline, aes(x=day, y=density, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+```
+
+##### 4.1.2.2 Trait data
+
+As in section 4.1.1.2, we interpolate the missing trait data of T. pyriformis and Euplotes sp. but with spline interpolation. 
+```{r,results='hide'}
+# Interpolated the trait data on the missing days with previously defined function.
+t.t_sp <- intpl_spline(tetraSumm, tetraSumm$area, c(1:4), c(1:6), 4,15) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("tetra", 432)))
+colnames(t.t_sp) <- c("day","area", "treatNum", "rep","species" )
+tetraSumm[which(tetraSumm$day == c(11,14)), c(2,4,15)]
+t.t_sp$area[which(t.t_sp$day== c(12,13))] <- NA # because all treatments had average extinction time for tetrahymena before or day 11, that means tetrahymena is functionally extincted within the microcosm. Spline() predicted trait/area value on day 12-13 is not reliable as they are negative  while there is only one microcosm out of 24 had trait measure on day 11 and none on day 14. There for I replaced them with NAs.
+
+
+e.t_sp <- intpl_spline(eupSumm, eupSumm$area, c(1:4), c(1:6), 4,15) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", 432)))
+colnames(e.t_sp) <- c("day","area", "treatNum", "rep","species" )
+e.t_sp$area
+
+# Interpolate missing trait data of Euplotes.
+e.t.na <- e.t_sp[is.na(e.t_sp$area),c(1,3,4)] %>% filter(!day %in% c(16,17)) # rows for day 16,17 were added for multispacial CCM analysis data format only (each time series is seperated by two NAs). 
+
+for (i in 1:nrow(e.t.na)){
+  d <- spline(eupSumm$day[which(eupSumm$treatNum== e.t.na[i,2] & eupSumm$rep == e.t.na[i,3])], eupSumm$area[which(eupSumm$treatNum== e.t.na[i,2] & eupSumm$rep == e.t.na[i,3])], method ="fmm", n = 2,xmin = e.t.na[i,1], xmax = e.t.na[i,1])
+  e.t_sp$area[which(e.t_sp$treatNum == e.t.na[i,2] & e.t_sp$rep == e.t.na[i,3] & e.t_sp$day == e.t.na[i,1])] <- d$y[1]
+}
+e.t_sp$area
+```
+
+Here are T.pyriformis and Eupltoes sp. phenotypic dynamics with Spline interpolation. 
+
+```{r,fig.width=8, fig.height=4}
+trait_sp <- rbind(t.t_sp, e.t_sp)
+ggplot(data = trait_sp, aes(x=day, y=area, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+```
+
+
+### 4.1.3 smooth.spline
+
+###### 4.1.3.1 Density data
+
+Again, we first define function that allow us to interpolate missing data by treatment and by repliate with smooth spline interpolation. 
+
+```{r}
+intpl_smooth_spline <- function(data,Yvar, tre.vector, rep.vector,daycolnum,denscolnum,x_out){
+  total_sp <- data.frame()
+  for (i in tre.vector){
+  for(j in rep.vector){
+  sp1 <- smooth.spline(data$day[which(data$treatNum== i & data$rep == j)], Yvar[which(data$treatNum== i & data$rep == j)])
+  p <- predict(sp1,x_out)
+d <- data[which(data$treatNum== i & data$rep == j),c(daycolnum,denscolnum)] 
+colnames(d) <- c("x", "y")
+t<- rbind(p,d)
+t$treatNum <- rep(c(i), n = 16)
+t$rep <- rep(c(j), n = 16)
+t <- t %>% arrange(x)
+mCCM_nas <- as.data.frame(matrix(rep(c(16,NA,i,j,17,NA,i,j)),byrow = T,nrow = 2 ))
+colnames(mCCM_nas) <- c("x", "y", "treatNum","rep")
+t2 <- rbind(t,mCCM_nas)
+total_sp <- rbind(total_sp, t2)
+    }
+  }
+colnames(total_sp) <- c("day", "density", "treatNum","rep")
+total_sp$density[total_sp$density < 0] = 0  #***** all the negative prediction are replace by 0!
+print(total_sp)
+}
+```
+
+Now we interpolation missing of species ecological time series. 
+
+```{r, results='hide'}
+tetra_sm_sp <- intpl_smooth_spline(tetra, tetra$density, c(1:4), c(1:6), 3,8,c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("tetra", 432))) 
+eup_sm_sp <- intpl_smooth_spline(eup, eup$density, c(1:4), c(1:6), 3,8,c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", 432)))
+bac_sm_sp <- intpl_smooth_spline(bac, bac$OD, c(1:4), c(1:5), 4,9,c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep),species = c(rep("bac", 339)))
+all_sm_sp <- rbind(tetra_sm_sp,eup_sm_sp, bac_sm_sp)
+```
+
+Here are the ecological time series of all species with smooth spline interpolation. 
+```{r, fig.width=12, fig.height=4}
+ggplot(data = all_sm_sp, aes(x=day, y=density, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+```
+
+##### 4.1.3.2 Trait data
+
+As in section 4.1.1.2, we interpolate the missing data but with smooth spline interpolation. 
+```{r, results='hide'}
+tetraSumm.no.na <- tetraSumm %>% na.omit()
+t.t_smsp <- intpl_smooth_spline(tetraSumm.no.na, tetraSumm.no.na$area, c(1:4), c(1:6), 4,15, c(5,6)) %>% mutate(treatNum = as.factor(treatNum), rep = as.factor(rep))
+t.t_smsp$species = rep(c("tetra"), times = nrow(t.t_smsp))
+colnames(t.t_smsp) <- c("day","area", "treatNum", "rep","species" )
+t.t_smsp$area
+
+# only interpolated the trait for the missing days
+eupSumm.no.na <- eupSumm %>% na.omit()
+e.t_smsp0 <- intpl_smooth_spline(eupSumm.no.na, eupSumm.no.na$area, c(1:4), c(1:6), 4,15, c(5,6,12,13)) %>% mutate(treatNum = as.factor(treatNum),  rep = as.factor(rep),species = c(rep("eup", nrow(.))))
+colnames(e.t_smsp0) <- c("day","area", "treatNum", "rep","species" )
+e.t_smsp <- e.t.na %>% mutate(area = rep(NA, times= nrow(e.t.na)), species = rep("eup", times= nrow(e.t.na))) %>% rbind(.,e.t_smsp0) %>% arrange(treatNum, rep, day)
+e.t_smsp$area 
+
+# Because of the low density of Euplotes in the beginning of the experiment, there are days where we detected no Euplotes in our samples, thus no trait data. 
+# I also interpolated trait values for days that we didn't detected individual for trait measurements. 
+e.t.na.smsp <- e.t.na %>% mutate(area = rep(NA, times= nrow(e.t.na)), species = rep("eup", times= nrow(e.t.na)))# missing values in area
+for (i in 1:nrow(e.t.na.smsp)){
+  sp <- smooth.spline(eupSumm.no.na$day[which(eupSumm.no.na$treatNum== e.t.na[i,2] & eupSumm.no.na$rep == e.t.na[i,3])], eupSumm.no.na$area[which(eupSumm.no.na$treatNum== e.t.na[i,2] & eupSumm.no.na$rep == e.t.na[i,3])])
+  d <- predict( sp, e.t.na[i,1])
+  e.t.na.smsp$area[i] <- d$y
+}
+
+e.t_smsp <- rbind(e.t_smsp0,e.t.na.smsp) %>% arrange(treatNum, rep,day)
+e.t_smsp$area
+```
+
+Here are T.pyriformis and Eupltoes sp. phenotypic dynamics with Smooth Spline interpolation. 
+```{r ,fig.width=8, fig.height=4}
+trait_smsp <- rbind(t.t_smsp, e.t_smsp)
+ggplot(data = trait_smsp, aes(x=day, y=area, group=treatNum, color=treatNum, shape= treatNum)) +
+    geom_point(size =3) +
+facet_wrap(~species, scale = "free")+
+  scale_colour_manual(name = "Treatment",
+                        labels = trt_name,
+                        values=c("#028ff7","#f76a02", "#8ecbf8", "#fdc470")) +   
+    scale_shape_manual(name = "Treatment",
+                       labels = trt_name,
+                       values = c(19, 19, 17, 17))
+```
+
+# 4.2 Multispacial CCM 
+
+### 4.2.1 Using linear interpolation for Multispacial CCM
+
+Here are the ecological data with linear interpolation that we will use for multispacial CCM. We first spread the ecological data  so it's easier to index for multispacial CCM analysis.
+
+```{r}
+tetra_app_ccm <- tetra_approx %>%spread( key = treatNum, value = density) %>% arrange(rep,day) %>% rename(F22 = 4, F25 = 5, H22 = 6, H25 =7)
+eup_app_ccm  <- eup_approx %>%spread( key = treatNum, value = density) %>% arrange(rep,day)%>% rename(F22 = 4, F25 = 5, H22 = 6, H25 =7)
+bac_app_ccm  <- bac_approx %>%spread( key = treatNum, value = density) %>% arrange(rep,day)%>% rename(F22 = 4, F25 = 5, H22 = 6, H25 =7)
+
+# remove day 15 for tetra and eup to run multispacial CCM with bacteria since Day 15 data is missing for bacteria
+    tetra_app_ccm_d14 <- tetra_app_ccm[-which(tetra_app_ccm$day == 15),]
+    eup_app_ccm_d14 <- eup_app_ccm[-which(tetra_app_ccm$day == 15),]
+```
+
+
+Here we calculated the optimal embeding dimension for each of the species by treatment. First, we define function to calculate and record optimal embedding dimension by treatment for multispacial CCM analysis.
+
+```{r}
+opt_E <- function(maxE, data, Name){
+  Emat<-as.data.frame(matrix(nrow=maxE-1, ncol=5)); colnames(Emat)<-c("Embed_D", "F22", "F25", "H22","H25"); Emat$Embed_D <- c(2:maxE)
+  for(E in 2:maxE) {
+    for (j in 1:4){
+  Emat[E-1,j+1]<-SSR_pred_boot(A=data[,j+3], E=E, predstep=1, tau=1)$rho
+  }}
+ optE <- Emat %>% pivot_longer(!Embed_D,names_to = "trt", values_to = "rho" )%>% group_by(trt) %>% filter(rho == max(rho)) %>% select(trt,Embed_D) %>% as.data.frame()
+ colnames(optE) <- c("trt", Name)
+ return(optE)
+}
+```
+
+Then we calculate the optimal embedding dimension for each species by treatment. 
+```{r}
+bac_app_E <- opt_E(6,bac_app_ccm, "bac")
+tetra_app_E <- opt_E(6,tetra_app_ccm, "tetra")
+eup_app_E <- opt_E(6,eup_app_ccm, "eup")
+tetra_app_E_d14 <- opt_E(6,tetra_app_ccm_d14, "tetra_d14")
+eup_app_E_d14 <- opt_E(6,eup_app_ccm_d14, "eup_d14")
+opt_E_app1 <- left_join(bac_app_E,tetra_app_E, by = "trt") %>% left_join(eup_app_E, by = "trt") %>% left_join(tetra_app_E_d14, by = "trt") %>% left_join(eup_app_E_d14, by = "trt") %>% arrange(trt)
+```
+
+
+Here are species trait data with linear interpolation prediction that will be used in multispacial CCM. 
+```{r}
+t.t_app_ccm <- t.t_app %>%spread( key = treatNum, value = area) %>% arrange(rep,day) 
+    colnames(t.t_app_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+
+t.t_app_ccm_d9 <- t.t_app_ccm %>% filter(! day %in% c(10:15 ))# only kept tetrahymena trait data from day 0 - day 9 to avoid problems with too many NAs in the time series for ccm test. On average tetrahymena population went extinct by day 9.
+
+e.t_app_ccm <- e.t_app %>%spread( key = treatNum, value = area) %>% arrange(rep,day) # only kept tetrahymena trait data from day 0 - day 9 since on average tetrahymena population went extinct by day 9.
+    colnames(e.t_app_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+e.t_app_ccm_d9 <- e.t_app_ccm %>% filter(! day %in% c(10:15 ))
+
+# crop ecological dynamics that are interpolated by linear interpolation (approx)
+bac_app_ccm_d9 <- bac_app_ccm %>% filter(! day %in% c(10:14))
+tetra_app_ccm_d9 <- tetra_app_ccm %>% filter(! day %in% c(10:14))
+eup_app_ccm_d9 <- eup_app_ccm %>% filter(! day %in% c(10:14))
+```
+
+
+Calculate the best embeding dimension for the trait time series, and any cropped time series to match the length of tetrahymena trait time series. Time series's embeding dimension that has not been calculated are: 
+ - 1. tetrahymena trait (cropped to day 9)
+ - 2. Euplotes trait
+ - 3. Euplotes trait crop to day 9
+ - 4-6. bacteria, tetrahymena, euplotes ecological dynamics/ density time series crop to day 9
+```{r}
+t.t_app_E <- opt_E(6,t.t_app_ccm_d9, "t.t")
+e.t_app_E <- opt_E(6,e.t_app_ccm, "e.t")
+e.t.d9_app_E <- opt_E(6,e.t_app_ccm_d9, "e.t_d9")
+bac.d9_app_E <- opt_E(6,bac_app_ccm_d9, "bac_d9")
+tetra.d9_app_E <- opt_E(6,tetra_app_ccm_d9, "tetra_d9")
+eup.d9_app_E <- opt_E(6,eup_app_ccm_d9, "eup_d9")
+opt_E_app <- left_join(opt_E_app1, t.t_app_E) %>% left_join(e.t_app_E, by = "trt") %>% left_join(e.t.d9_app_E, by = "trt") %>% left_join(bac.d9_app_E, by = "trt") %>% left_join(tetra.d9_app_E, by = "trt") %>% left_join(eup.d9_app_E, by = "trt")  %>% arrange(trt)
+```
+
+
+Here is a list of all the dataframes that will be used for multispacial CCM test. 
+```{r}
+dlist_app <- list(bac_app_ccm, tetra_app_ccm,tetra_app_ccm_d14,eup_app_ccm,eup_app_ccm_d14, t.t_app_ccm, e.t_app_ccm,e.t_app_ccm_d9,bac_app_ccm_d9, tetra_app_ccm_d9,eup_app_ccm_d9)
+names(dlist_app) <- c("bac_app_ccm", "tetra_app_ccm", "tetra_app_ccm_d14", "eup_app_ccm", "eup_app_ccm_d14", "t.t_app_ccm", "e.t_app_ccm","e.t_app_ccm_d9", "bac_app_ccm_d9", "tetra_app_ccm_d9", "eup_app_ccm_d9")
+```
+
+##### 4.2.1.1 Multispacial CCM test
+
+Here we define the function that runs multispcial CCM test on designated pairs of times series. 
+
+```{r}
+msCCM_list <- function(dlist,testinfo, optE, itrtn_num){
+msCCM_data <- NULL
+trename <- c("F22", "F25", "H22", "H25")
+for(j in 1:4){
+  ccmlist <- NULL
+  for(i in 1: nrow(testinfo)) {
+  ccmlist[[testinfo[i,"pair"]]] <- CCM_boot(dlist[[testinfo[i,"cause"]]][,j+3], dlist[[testinfo[i,"reciever"]]][,j+3], optE[j,testinfo[i,"E"]], tau=1, iterations = itrtn_num)
+  }
+  lname <- names(ccmlist)
+  names(ccmlist) <- paste(rep(trename[j],nrow(testinfo)),lname, sep = "_")
+  msCCM_data<- c(msCCM_data,ccmlist)
+}
+return(msCCM_data)
+}
+```
+
+Eco-Eco interactions. Here we performed the multispacial CCM for the ecological dynamics time series for each of the species pair by treatment. Because we are testing the causal relationship between each pair, we ran the multispacial CCM test 'CCMboot()' on each species pair twice, with different order in the CCMboot() test. This results 2 casual relationship test per species pair * 3 species pair * 4 treatments = 24 tests results. Each of the test run 800 iteration. 
+```{r}
+test_app_EcEc <- NULL # creating a dataframe to call timeseries for the CCM tests, loop for each treatments
+test_app_EcEc$pair <- c("b.t", "t.b","b.e","e.b","t.e","e.t")
+test_app_EcEc$cause <- c("bac_app_ccm","tetra_app_ccm_d14", "bac_app_ccm","eup_app_ccm_d14","tetra_app_ccm","eup_app_ccm")
+test_app_EcEc$reciever <-  c("tetra_app_ccm_d14","bac_app_ccm", "eup_app_ccm_d14","bac_app_ccm","eup_app_ccm","tetra_app_ccm")
+test_app_EcEc$E <- c("bac","tetra_d14", "bac","eup_d14","tetra","eup")
+test_app_EcEc <- test_app_EcEc %>% as.data.frame()
+msCCM_approx_EcEc <- msCCM_list(dlist_app, test_app_EcEc, opt_E_app, 800)
+```
+
+Eco-Pheno interactions. Here we use the multispacial CCM test to examine the causal effects of the bacterial and protists ecological dynamics time series on protists phenotypic dynamics time series (the changes in protists size over time). 
+
+```{r}
+test_app_EcPhn <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_app_EcPhn$pair <- c("b.tt", "b.et","t.tt","t.et","e.tt","e.et")
+test_app_EcPhn$cause <- c("bac_app_ccm_d9","bac_app_ccm", "tetra_app_ccm_d9","tetra_app_ccm","eup_app_ccm_d9","eup_app_ccm")
+test_app_EcPhn$reciever  <- c("t.t_app_ccm","e.t_app_ccm", "t.t_app_ccm","e.t_app_ccm","t.t_app_ccm","e.t_app_ccm")
+test_app_EcPhn$E <- c("bac_d9","bac", "tetra_d9","tetra","eup_d9","eup")
+test_app_EcPhn <- test_app_EcPhn %>% as.data.frame()               
+msCCM_approx_EcPhn <- msCCM_list(dlist_app, test_app_EcPhn, opt_E_app, 800)
+```
+
+Pheno-Eco interactions. Now we examine the causal effects of of the size of both protists species on the ecological dynamcis of all three species.
+```{r}
+test_app_PhnEc <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_app_PhnEc$pair <- c("tt.b", "et.b","tt.t","et.t","tt.e","et.e")
+test_app_PhnEc$cause <- c("t.t_app_ccm","e.t_app_ccm", "t.t_app_ccm","e.t_app_ccm","t.t_app_ccm","e.t_app_ccm")
+test_app_PhnEc$reciever  <- c("bac_app_ccm_d9","bac_app_ccm", "tetra_app_ccm_d9","tetra_app_ccm","eup_app_ccm_d9","eup_app_ccm")
+test_app_PhnEc$E <- c("t.t", "e.t", "t.t", "e.t", "t.t", "e.t")
+test_app_PhnEc <- test_app_PhnEc %>% as.data.frame()                          
+msCCM_approx_PhnEc <- msCCM_list(dlist_app, test_app_PhnEc, opt_E_app, 800)
+```
+
+Pheno-Pheno interactions. 
+```{r}
+test_app_PhnPhn <- NULL 
+test_app_PhnPhn$pair <- c("tt.et", "et.tt")
+test_app_PhnPhn$cause <- c("t.t_app_ccm","e.t_app_ccm_d9")
+test_app_PhnPhn$reciever  <- c("e.t_app_ccm_d9", "t.t_app_ccm")
+test_app_PhnPhn$E <- c("t.t", "e.t_d9")
+test_app_PhnPhn <- test_app_PhnPhn %>% as.data.frame()                          
+msCCM_approx_PhnPhn <- msCCM_list(dlist_app, test_app_PhnPhn, opt_E_app, 800)
+```
+
+##### 4.2.1.2 Multispactial CCM plots with Linear interpolation (Apendix II Fig 1-4)
+
+Here we define a new function to plot multispacial CCM predictability against library length.
+```{r}
+plot_msccm <- function (data, i, Title, color, linestyle){
+  plot(data[[i]][["Lobs"]], data[[i]][["rho"]],type="l", col = color[1], lwd = 2, lty = linestyle[1], xlim=c(5, 100), ylim=c(0,1), xlab="Library length", ylab="rho",cex.lab=1.5, cex.axis=1.5, cex.names = 1.5 ) # b.t
+  lines(data[[i+1]][["Lobs"]], data[[i+1]][["rho"]], type="l", col = color[2], lwd = 2, lty = linestyle[2]) 
+  lines(data[[i+2]][["Lobs"]], data[[i+2]][["rho"]], type="l", col = color[3], lwd = 2, lty = linestyle[3]) 
+  lines(data[[i+3]][["Lobs"]], data[[i+3]][["rho"]], type="l", col = color[4], lwd = 2, lty = linestyle[4])
+  lines(data[[i+4]][["Lobs"]], data[[i+4]][["rho"]],type="l", col= color[5], lty=linestyle[5],lwd=1.5) 
+  lines(data[[i+5]][["Lobs"]], data[[i+5]][["rho"]],col = color[6], lty=linestyle[6], lwd=1.5)
+  title(main = Title, cex.main = 2)}
+```
+
+###### Appendix II Fig 1
+
+```{r, fig.width=12, fig.height=8}
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+# Eco-Eco msCCM
+EcEc_col <- c( "#A997DF", "#A997DF","#add0af","#add0af","#FFC857","#FFC857")
+EcEc_line <- c(1,2,1,2,1,2)
+{for(i in c(1:4)){
+    plot_msccm(msCCM_approx_EcEc, i*6-5,trt_name[i], EcEc_col,EcEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcEc_col, lty = EcEc_line, legend =c("B -> T","T -> B", "B -> E", "E -> B", "T -> E","E -> T" ), lwd = 2,  cex = 2)
+mtext("Eco-Eco multispacial CCM Prediction (linear)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 2
+```{r,fig.width=12, fig.height=8}
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+# Eco-Pheno msCCM 
+EcPhn_col <- c("#A997DF","#add0af","#929084","#FFC857","#FFC857","#2E4052")
+EcPhn_line <- c(1,1,3,1,2,3)
+{for(i in c(1:4)){
+    plot_msccm(msCCM_approx_EcPhn, i*6-5,trt_name[i],EcPhn_col,EcPhn_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcPhn_col, lty = EcPhn_line, legend =c( "B -> Tt", "B -> Et", "T -> Tt","T -> Et", "E -> Tt", "E -> Et"), lwd = 2,  cex = 2)
+mtext("Eco-Pheno multispacial CCM Prediction (linear)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 3
+```{r,fig.width=12, fig.height=8}
+# Pheno-Eco msCCM 
+PhnEc_col <- c("#A997DF","#add0af","#929084","#FFC857","#FFC857","#2E4052")
+PhnEc_line <- c(2,2,3,2,1,3)
+
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_approx_PhnEc, i*6-5,trt_name[i],PhnEc_col, PhnEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = PhnEc_col, lty = PhnEc_line, legend =c( "Tt -> B", "Et -> B", "Tt -> T","Et -> T", "Tt -> E", "Et -> E"), lwd = 2,  cex = 2)
+mtext("Pheno-Eco multispacial CCM Prediction (linear)", outer = TRUE, cex = 2)}
+```
+
+
+###### Appendix II Fig 4
+```{r,fig.width=12, fig.height=8}
+#Pheno-Pheno
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+for(i in c(1,3,5,7)){
+plot(msCCM_approx_PhnPhn[[i]][["Lobs"]], msCCM_approx_PhnPhn[[i]][["rho"]],type="l", col = "#FFC857", lwd = 2, lty = 1, xlim=c(5, 80), ylim=c(-0,1), xlab="Library length", ylab="rho",cex.lab=1.5, cex.axis=1.5, cex.names = 1.5 ) # b.t
+  lines(msCCM_approx_PhnPhn[[i+1]][["Lobs"]], msCCM_approx_PhnPhn[[i+1]][["rho"]], type="l", col = "#FFC857", lwd = 2, lty = 2) 
+}
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = c("#FFC857","#FFC857"), lty = c(1,2), legend =c( "Tt -> Et", "Et -> Tt"), lwd = 2,  cex = 2)
+mtext("Pheno-Pheno multispacial CCM Prediction (linear)", outer = TRUE, cex = 2)
+```
+
+##### 4.2.1.3 Plot the rho at largest library size
+
+Here I set up the data frame to store the multispacial CCM results, and then I extract the predictability (rho) at the largest library length of the each multispcial CCM test. 
+
+```{r}
+# Eco-Eco
+EcEcRho<- str_split_fixed(names(msCCM_approx_EcEc), '_', 2) %>% as.data.frame %>% rename(trt = V1,mapping = V2) %>% mutate(temp = rep(c("22C", "25C"), each = 6, time = 2),nut=rep(c("High", "Low"), each = 12), species = rep(c("BT", "BE", "TE"),each=2, time = 4), direc = rep(c("up", "down"), time = 12), dynamics = rep(c("EcoEco"), time = 24))
+
+Extra.rho <- function(i,dlist,factor) {last(dlist[[i]]$rho)}
+Extra.Lobs <- function(i,dlist,factor) {last(dlist[[i]]$Lobs)}
+
+EcEcRho$rho_app <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_approx_EcEc))
+EcEcRho$Lobs_app <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_approx_EcEc))
+
+# Eco-Pheno
+EcPhnRho<- str_split_fixed(names(msCCM_approx_EcPhn), '_', 2) %>% as.data.frame %>% rename(trt = V1,mapping = V2) %>% mutate(temp = rep(c("22C", "25C"), each = 6, time = 2),nut=rep(c("High", "Low"), each = 12),species = rep(c("BT", "BE", "Tetra","TE","TE","Eup"),time = 4), direc = rep(c("up", "up","single","up","down", "single"), time = 4), dynamics = rep(c("EcoPheno"), time = 24))
+EcPhnRho$rho_app <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_approx_EcPhn ))
+EcPhnRho$Lobs_app <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_approx_EcPhn))
+
+# Pheno-Eco
+PhnEcRho<- str_split_fixed(names(msCCM_approx_PhnEc), '_', 2) %>% as.data.frame %>% rename(trt = V1,mapping = V2) %>% mutate(temp = rep(c("22C", "25C"), each = 6, time = 2),nut=rep(c("High", "Low"), each = 12),species = rep(c("BT", "BE", "Tetra","TE","TE","Eup"),time = 4), direc = rep(c("down", "down","single","down","up", "single"), time = 4), dynamics = rep(c("PhenoEco"), time = 24))
+PhnEcRho$rho_app <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_approx_PhnEc ))
+PhnEcRho$Lobs_app <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_approx_PhnEc))
+
+# Pheno-pheno
+PhnPhnRho <- str_split_fixed(names(msCCM_approx_PhnPhn), '_', 2) %>% as.data.frame %>% rename(trt = V1,mapping = V2) %>% mutate(temp = rep(c("22C", "25C"), each = 2, time = 2),nut= rep(c("High", "Low"), each = 4),species = rep(c("TE"),time = 8), direc = rep(c("up", "down"), time = 4), dynamics = rep(c("PhenoPheno"), time = 8))
+PhnPhnRho$rho_app <- do.call(rbind,mclapply(1:8,Extra.rho,dlist = msCCM_approx_PhnPhn))
+PhnPhnRho$Lobs_app <- do.call(rbind,mclapply(1:8,Extra.Lobs,dlist = msCCM_approx_PhnPhn))
+
+rho.all1 <- rbind(EcEcRho,EcPhnRho) %>% full_join(PhnEcRho) %>% full_join(PhnPhnRho) %>% mutate(species = factor(species, levels= c("BT","BE", "TE", "Tetra", "Eup")), direc = factor(direc,levels=c("up", "single","down")),nut = factor(nut,levels = c("Low","High")))
+```
+
+The convergence of cross-mapping skill (i.e. incresing rho with increasing library size) indicates causality. To better understand the causal effects between species interactions, we only used multispatial CCM results that shows convergence to infer those relationships. Here, we removed the CCM results that did not show clear convergence. 
+```{r}
+# replacing Full25 B->E EcoEco as NA
+rho.all1[which(rho.all1$trt=="F25" & rho.all1$mapping=="b.e" & rho.all1$dynamics=="EcoEco"), c("rho_app", "Lobs_app")] <- NA
+```
+
+
+######  Appendix II Fig 13
+```{r fig.width=8, fig.height=6}
+ggplot(data = rho.all1, aes(x=nut, y=rho_app, group=mapping, color= species,shape = direc, lty = direc)) + 
+  #geom_hline(yintercept=0,color = "#bcbcbc",  size = 0.3) +
+  geom_line(data = rho.all1, aes(x=nut, y=rho_app),size =0.7) +  
+  geom_point(size =2, strok =1) +
+  ylim(0,1)+
+    scale_x_discrete(limits=c("Low","High")) +
+    labs(y="CCM Predictability", x = "") +
+  facet_wrap(~ dynamics + temp, nrow =2) +
+    theme_bw() +
+     theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black") ) +
+    scale_colour_manual(values=  c("#A997DF","#add0af", "#FFC857","#929084","#2E4052")) +
+    scale_linetype_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(1,3,2)) +
+    scale_shape_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(19, 17, 1))
+```
+
+
+### 4.2.2 spline interpolation for MS CCM
+
+##### 4.2.2.1 Multispacial CCM test
+
+As in section 4.2.1, we apply multispacial CCM analysis on time series data with spline interpolation. 
+```{r}
+# spread the data frame so it's easier to index for CCM
+tetra_sp_ccm <- tetra_spline %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(tetra_sp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+eup_sp_ccm<- eup_spline %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(eup_sp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+bac_sp_ccm<- bac_spline %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(bac_sp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+
+# remove day 15 for tetra and eup to run multispacial CCM with bacteria
+    tetra_sp_ccm_d14 <- tetra_sp_ccm[-which(tetra_sp_ccm$day == 15),]
+    eup_sp_ccm_d14 <- eup_sp_ccm[-which(eup_sp_ccm$day == 15),]
+```
+
+
+As before, calculating optimal embeding dimension.
+```{r}
+bac_sp_E <- opt_E(6,bac_sp_ccm, "bac")
+tetra_sp_E <- opt_E(6,tetra_sp_ccm, "tetra")
+eup_sp_E <- opt_E(6,eup_sp_ccm, "eup")
+tetra_sp_E_d14 <- opt_E(6,tetra_sp_ccm_d14, "tetra_d14")
+eup_sp_E_d14 <- opt_E(6,eup_sp_ccm_d14, "eup_d14")
+opt_E_sp1 <- left_join(bac_sp_E,tetra_sp_E, by = "trt") %>% left_join(eup_sp_E, by = "trt") %>% left_join(tetra_sp_E_d14, by = "trt") %>% left_join(eup_sp_E_d14, by = "trt") %>% arrange(trt)
+```
+
+
+Reformate trait time series that will be used in multispacial CCM analysis.
+```{r}
+t.t_sp_ccm <- t.t_sp %>%spread( key = treatNum, value = area) %>% arrange(rep,day) 
+    colnames(t.t_sp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+
+t.t_sp_ccm_d9 <- t.t_sp_ccm %>% filter(! day %in% c(10:15 ))# only kept tetrahymena trait data from day 0 - day 9 to avoid problems with too many NAs in the time series for ccm test. On average tetrahymena population went extinct by day 9.
+
+e.t_sp_ccm <- e.t_sp %>%spread( key = treatNum, value = area) %>% arrange(rep,day) # only kept tetrahymena trait data from day 0 - day 9 since on average tetrahymena population went extinct by day 9.
+    colnames(e.t_sp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+e.t_sp_ccm_d9 <- e.t_sp_ccm %>% filter(! day %in% c(10:15 ))
+
+# crop ecological dynamics that are interpolated by linear interpolation (approx)
+bac_sp_ccm_d9 <- bac_sp_ccm %>% filter(! day %in% c(10:14))
+tetra_sp_ccm_d9 <- tetra_sp_ccm %>% filter(! day %in% c(10:14))
+eup_sp_ccm_d9 <- eup_sp_ccm %>% filter(! day %in% c(10:14))
+```
+
+
+Calculate the best embeding dimension for the trait time series, and any cropped time series to match the length of tetrahymena trait time series. 
+```{r}
+t.t_sp_E <- opt_E(6,t.t_sp_ccm_d9, "t.t")
+e.t_sp_E <- opt_E(6,e.t_sp_ccm, "e.t")
+e.t.d9_sp_E <- opt_E(6,e.t_sp_ccm_d9, "e.t_d9")
+bac.d9_sp_E <- opt_E(6,bac_sp_ccm_d9, "bac_d9")
+tetra.d9_sp_E <- opt_E(6,tetra_sp_ccm_d9, "tetra_d9")
+eup.d9_sp_E <- opt_E(6,eup_sp_ccm_d9, "eup_d9")
+opt_E_sp <- left_join(opt_E_sp1, t.t_sp_E) %>% left_join(e.t_sp_E, by = "trt") %>% left_join(e.t.d9_sp_E, by = "trt") %>% left_join(bac.d9_sp_E, by = "trt") %>% left_join(tetra.d9_sp_E, by = "trt") %>% left_join(eup.d9_sp_E, by = "trt")  %>% arrange(trt)
+```
+
+
+Here is a list of all the dataframes that will be used for multispacial CCM test with spline interpolation.
+```{r}
+dlist_sp <- list(bac_sp_ccm, tetra_sp_ccm,tetra_sp_ccm_d14,eup_sp_ccm,eup_sp_ccm_d14, t.t_sp_ccm, e.t_sp_ccm,e.t_sp_ccm_d9,bac_sp_ccm_d9, tetra_sp_ccm_d9,eup_sp_ccm_d9)
+names(dlist_sp) <- c("bac_sp_ccm", "tetra_sp_ccm", "tetra_sp_ccm_d14", "eup_sp_ccm", "eup_sp_ccm_d14", "t.t_sp_ccm", "e.t_sp_ccm","e.t_sp_ccm_d9", "bac_sp_ccm_d9", "tetra_sp_ccm_d9", "eup_sp_ccm_d9")
+```
+
+
+Eco-Eco interactions. As in section 4.1.1, here we performed the multispacial CCM for the ecological dynamics time series for each of the species pair by treatment. 
+```{r}
+test_sp_EcEc <- NULL # creating a dataframe to call timeseries for the CCM tests, loop for each treatments
+test_sp_EcEc$pair <- c("b.t", "t.b","b.e","e.b","t.e","e.t")
+test_sp_EcEc$cause <- c("bac_sp_ccm","tetra_sp_ccm_d14", "bac_sp_ccm","eup_sp_ccm_d14","tetra_sp_ccm","eup_sp_ccm")
+test_sp_EcEc$reciever <-  c("tetra_sp_ccm_d14","bac_sp_ccm", "eup_sp_ccm_d14","bac_sp_ccm","eup_sp_ccm","tetra_sp_ccm")
+test_sp_EcEc$E <- c("bac","tetra_d14", "bac","eup_d14","tetra","eup")
+test_sp_EcEc <- test_sp_EcEc %>% as.data.frame()
+msCCM_spline_EcEc <- msCCM_list(dlist_sp, test_sp_EcEc, opt_E_sp, 800)
+```
+
+Eco-Pheno interactions. 
+
+```{r}
+test_sp_EcPhn <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_sp_EcPhn$pair <- c("b.tt", "b.et","t.tt","t.et","e.tt","e.et")
+test_sp_EcPhn$cause <- c("bac_sp_ccm_d9","bac_sp_ccm", "tetra_sp_ccm_d9","tetra_sp_ccm","eup_sp_ccm_d9","eup_sp_ccm")
+test_sp_EcPhn$reciever  <- c("t.t_sp_ccm","e.t_sp_ccm", "t.t_sp_ccm","e.t_sp_ccm","t.t_sp_ccm","e.t_sp_ccm")
+test_sp_EcPhn$E <- c("bac_d9","bac", "tetra_d9","tetra","eup_d9","eup")
+test_sp_EcPhn <- test_sp_EcPhn %>% as.data.frame()               
+msCCM_spline_EcPhn <- msCCM_list(dlist_sp, test_sp_EcPhn, opt_E_sp, 800)
+```
+
+Pheno-Eco interactions. 
+
+```{r}
+test_sp_PhnEc <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_sp_PhnEc$pair <- c("tt.b", "et.b","tt.t","et.t","tt.e","et.e")
+test_sp_PhnEc$cause <- c("t.t_sp_ccm","e.t_sp_ccm", "t.t_sp_ccm","e.t_sp_ccm","t.t_sp_ccm","e.t_sp_ccm")
+test_sp_PhnEc$reciever  <- c("bac_sp_ccm_d9","bac_sp_ccm", "tetra_sp_ccm_d9","tetra_sp_ccm","eup_sp_ccm_d9","eup_sp_ccm")
+test_sp_PhnEc$E <- c("t.t", "e.t", "t.t", "e.t", "t.t", "e.t")
+test_sp_PhnEc <- test_sp_PhnEc %>% as.data.frame()                          
+msCCM_spline_PhnEc <- msCCM_list(dlist_sp, test_sp_PhnEc, opt_E_sp, 800)
+```
+
+Pheno-Pheno interactions. 
+```{r}
+test_sp_PhnPhn <- NULL 
+test_sp_PhnPhn$pair <- c("tt.et", "et.tt")
+test_sp_PhnPhn$cause <- c("t.t_sp_ccm","e.t_sp_ccm_d9")
+test_sp_PhnPhn$reciever  <- c("e.t_sp_ccm_d9", "t.t_sp_ccm")
+test_sp_PhnPhn$E <- c("t.t", "e.t_d9")
+test_sp_PhnPhn <- test_sp_PhnPhn %>% as.data.frame()                          
+msCCM_spline_PhnPhn <- msCCM_list(dlist_sp, test_sp_PhnPhn, opt_E_sp, 800)
+```
+
+##### 4.2.2.2 Multispactial CCM plots with Spline interpolation
+######  Appendix II Fig 5
+```{r,fig.width=12, fig.height=8}
+# Eco-Eco msCCM
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_spline_EcEc, i*6-5,trt_name[i], EcEc_col,EcEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcEc_col, lty = EcEc_line, legend =c("B -> T","T -> B", "B -> E", "E -> B", "T -> E","E -> T" ), lwd = 2,  cex = 2)
+mtext("Eco-Eco multispacial CCM Prediction (spline)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 6
+
+```{r,fig.width=12, fig.height=8}
+# Eco-Pheno msCCM 
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_spline_EcPhn, i*6-5,trt_name[i],EcPhn_col,EcPhn_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcPhn_col, lty = EcPhn_line, legend =c( "B -> Tt", "B -> Et", "T -> Tt","T -> Et", "E -> Tt", "E -> Et"), lwd = 2,  cex = 2)
+mtext("Eco-Pheno multispacial CCM Prediction (spline)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 7
+
+```{r,fig.width=12, fig.height=8}
+# Pheno-Eco msCCM 
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0))
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_spline_PhnEc, i*6-5,trt_name[i],PhnEc_col, PhnEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = PhnEc_col, lty = PhnEc_line, legend =c( "Tt -> B", "Et -> B", "Tt -> T","Et -> T", "Tt -> E", "Et -> E"), lwd = 2,  cex = 2)
+mtext("Pheno-Eco multispacial CCM Prediction (spline)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 8
+
+```{r,fig.width=12, fig.height=8}
+#Pheno-Pheno
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+for(i in c(1:4)){
+plot(msCCM_spline_PhnPhn[[2*i-1]][["Lobs"]], msCCM_spline_PhnPhn[[2*i-1]][["rho"]],type="l", col = "#FFC857", lwd = 2, lty = 1, xlim=c(5, 80), ylim=c(0,1), xlab="Library length", ylab="rho",cex.lab=1.5, cex.axis=1.5, cex.names = 1.5, main = trt_name[i] ) # b.t
+  lines(msCCM_spline_PhnPhn[[2*i]][["Lobs"]], msCCM_spline_PhnPhn[[2*i]][["rho"]], type="l", col = "#FFC857", lwd = 2, lty = 2) 
+}
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = c("#FFC857","#FFC857"), lty = c(1,2), legend =c( "Tt -> Et", "Et -> Tt"), lwd = 2,  cex = 2)
+mtext("Pheno-Pheno multispacial CCM Prediction (spline)", outer = TRUE, cex = 2)
+```
+
+##### 4.2.2.3 Plot the rho at largest library size
+```{r,fig.width=12, fig.height=8}
+EcEcRho$rho_sp <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_spline_EcEc))
+EcEcRho$Lobs_sp <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_spline_EcEc))
+
+EcPhnRho$rho_sp <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_spline_EcPhn ))
+EcPhnRho$Lobs_sp <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_spline_EcPhn))
+
+PhnEcRho$rho_sp <- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_spline_PhnEc ))
+PhnEcRho$Lobs_sp <- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_spline_PhnEc))
+
+PhnPhnRho$rho_sp <- do.call(rbind,mclapply(1:8,Extra.rho,dlist = msCCM_spline_PhnPhn))
+PhnPhnRho$Lobs_sp <- do.call(rbind,mclapply(1:8,Extra.Lobs,dlist = msCCM_spline_PhnPhn))
+
+rho.all2 <- rbind(EcEcRho,EcPhnRho) %>% full_join(PhnEcRho) %>% full_join(PhnPhnRho)%>% mutate(species = factor(species, levels= c("BT","BE", "TE", "Tetra", "Eup")), direc = factor(direc,levels=c("up", "single","down")),nut = factor(nut,levels = c("Low","High")))
+```
+As mentioned before, the convergence of cross-mapping skill (i.e. increasing rho with increasing library size) indicates causality. To better understand the causal effects between species interactions, we only used multispatial CCM results that shows convergence to infer those relationships. Here, we removed the CCM results that did not show clear convergence. We replace the following CCM results with NAs. 
+
+EcoEco Full 25C b.t
+EcoPheno Half 25C b.et
+PhenoEco Half 22C et.t  
+PhenoEco Full 22C et.t
+PhenoPheno Half 25C et.tt
+
+```{r,fig.width=12, fig.height=8}
+rho.all2[which(rho.all2$trt=="F25" & rho.all1$mapping=="b.t" & rho.all1$dynamics=="EcoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all2[which(rho.all2$trt=="H25" & rho.all1$mapping=="b.et" & rho.all1$dynamics=="EcoPheno"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all2[which(rho.all2$trt=="H22" & rho.all1$mapping=="et.t" & rho.all1$dynamics=="PhenoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all2[which(rho.all2$trt=="F22" & rho.all1$mapping=="et.t" & rho.all1$dynamics=="PhenoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all2[which(rho.all2$trt=="H25" & rho.all1$mapping=="et.tt" & rho.all1$dynamics=="PhenoPheno"), c("rho_sp", "Lobs_sp")] <- NA
+
+```
+
+
+
+###### Appendix II Fig 14
+```{r fig.width=8, fig.height=6}
+ggplot(data = rho.all2, aes(x=nut, y=rho_sp, group=mapping, color= species,shape = direc, lty = direc)) + 
+  #geom_hline(yintercept=0,color = "#bcbcbc",  size = 0.3) +
+  geom_line(data = rho.all2, aes(x=nut, y=rho_sp),size =0.7) +  
+  geom_point(size =2, strok =1) +
+  ylim(0,1)+
+    scale_x_discrete(limits=c("Low","High")) +
+    labs(y="CCM Predictability", x = "") +
+  facet_wrap(~ dynamics + temp, nrow =2) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black") ) +
+    scale_colour_manual(values=  c("#A997DF","#add0af", "#FFC857","#929084","#2E4052")) +
+    scale_linetype_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(1,3,2)) +
+    scale_shape_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(19, 17, 1))
+```
+
+
+### 4.2.3 smooth.spline interpolation for Multispcatial CCM
+
+##### 4.2.3.1 Multispcatial CCM test
+
+Formating ecological time series and calculating optimal embedding dimension for multispacial CCM analysis.
+
+```{r}
+# spread the data frame so it's easier to index for CCM
+tetra_smsp_ccm <- tetra_sm_sp %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(tetra_smsp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+eup_smsp_ccm <- eup_sm_sp %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(eup_smsp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+bac_smsp_ccm <- bac_sm_sp %>%spread( key = treatNum, value = density) %>% arrange(rep,day)
+    colnames(bac_smsp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+
+# remove day 15 for tetra and eup to run multispacial CCM with bacteria
+    tetra_smsp_ccm_d14 <- tetra_smsp_ccm[-which(tetra_smsp_ccm$day == 15),]
+    eup_smsp_ccm_d14 <- eup_smsp_ccm[-which(eup_smsp_ccm$day == 15),]
+```
+
+
+```{r}
+bac_smsp_E <- opt_E(6,bac_smsp_ccm, "bac")
+tetra_smsp_E <- opt_E(6,tetra_smsp_ccm, "tetra")
+eup_smsp_E <- opt_E(6,eup_smsp_ccm, "eup")
+tetra_smsp_E_d14 <- opt_E(6,tetra_smsp_ccm_d14, "tetra_d14")
+eup_smsp_E_d14 <- opt_E(6,eup_smsp_ccm_d14, "eup_d14")
+opt_E_smsp1 <- left_join(bac_smsp_E,tetra_smsp_E, by = "trt") %>% left_join(eup_smsp_E, by = "trt") %>% left_join(tetra_smsp_E_d14, by = "trt") %>% left_join(eup_smsp_E_d14, by = "trt") %>% arrange(trt)
+```
+
+
+```{r}
+t.t_smsp_ccm <- t.t_sp %>%spread( key = treatNum, value = area) %>% arrange(rep,day) 
+    colnames(t.t_smsp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+
+t.t_smsp_ccm_d9 <- t.t_smsp_ccm %>% filter(! day %in% c(10:15 ))# only kept tetrahymena trait data from day 0 - day 9 to avoid problems with too many NAs in the time series for ccm test. On average tetrahymena population went extinct by day 9.
+
+e.t_smsp_ccm <- e.t_sp %>%spread( key = treatNum, value = area) %>% arrange(rep,day) # only kept tetrahymena trait data from day 0 - day 9 since on average tetrahymena population went extinct by day 9.
+    colnames(e.t_smsp_ccm) <- c("day", "rep","species", "F22", "F25", "H22", "H25")
+e.t_smsp_ccm_d9 <- e.t_smsp_ccm %>% filter(! day %in% c(10:15 ))
+
+# crop ecological dynamics that are interpolated by linear interpolation (approx)
+bac_smsp_ccm_d9 <- bac_smsp_ccm %>% filter(! day %in% c(10:14))
+tetra_smsp_ccm_d9 <- tetra_smsp_ccm %>% filter(! day %in% c(10:14))
+eup_smsp_ccm_d9 <- eup_smsp_ccm %>% filter(! day %in% c(10:14))
+```
+
+
+Calculate the best embeding dimension for the trait time series, and any cropped time series to match the length of tetrahymena trait time series. 
+```{r}
+t.t_smsp_E <- opt_E(6,t.t_smsp_ccm_d9, "t.t")
+e.t_smsp_E <- opt_E(6,e.t_smsp_ccm, "e.t")
+e.t.d9_smsp_E <- opt_E(6,e.t_smsp_ccm_d9, "e.t_d9")
+bac.d9_smsp_E <- opt_E(6,bac_smsp_ccm_d9, "bac_d9")
+tetra.d9_smsp_E <- opt_E(6,tetra_smsp_ccm_d9, "tetra_d9")
+eup.d9_smsp_E <- opt_E(6,eup_smsp_ccm_d9, "eup_d9")
+opt_E_smsp <- left_join(opt_E_smsp1, t.t_smsp_E) %>% left_join(e.t_smsp_E, by = "trt") %>% left_join(e.t.d9_smsp_E, by = "trt") %>% left_join(bac.d9_smsp_E, by = "trt") %>% left_join(tetra.d9_smsp_E, by = "trt") %>% left_join(eup.d9_smsp_E, by = "trt")  %>% arrange(trt)
+```
+
+
+Here is a list of all the dataframes that will be used for multispacial CCM test. 
+```{r}
+dlist_smsp <- list(bac_smsp_ccm, tetra_smsp_ccm,tetra_smsp_ccm_d14,eup_smsp_ccm,eup_smsp_ccm_d14, t.t_smsp_ccm, e.t_smsp_ccm,e.t_smsp_ccm_d9,bac_smsp_ccm_d9, tetra_smsp_ccm_d9,eup_smsp_ccm_d9)
+names(dlist_smsp) <- c("bac_smsp_ccm", "tetra_smsp_ccm", "tetra_smsp_ccm_d14", "eup_smsp_ccm", "eup_smsp_ccm_d14", "t.t_smsp_ccm", "e.t_smsp_ccm","e.t_smsp_ccm_d9", "bac_smsp_ccm_d9", "tetra_smsp_ccm_d9", "eup_smsp_ccm_d9")
+```
+
+
+Eco-Eco interactions. 
+```{r}
+test_smsp_EcEc <- NULL # creating a dataframe to call timeseries for the CCM tests, loop for each treatments
+test_smsp_EcEc$pair <- c("b.t", "t.b","b.e","e.b","t.e","e.t")
+test_smsp_EcEc$cause <- c("bac_smsp_ccm","tetra_smsp_ccm_d14", "bac_smsp_ccm","eup_smsp_ccm_d14","tetra_smsp_ccm","eup_smsp_ccm")
+test_smsp_EcEc$reciever <-  c("tetra_smsp_ccm_d14","bac_smsp_ccm", "eup_smsp_ccm_d14","bac_smsp_ccm","eup_smsp_ccm","tetra_smsp_ccm")
+test_smsp_EcEc$E <- c("bac","tetra_d14", "bac","eup_d14","tetra","eup")
+test_smsp_EcEc <- test_smsp_EcEc %>% as.data.frame()
+msCCM_smsp_EcEc <- msCCM_list(dlist_smsp, test_smsp_EcEc, opt_E_smsp, 800)
+```
+
+Eco-Pheno interactions.
+
+```{r}
+test_smsp_EcPhn <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_smsp_EcPhn$pair <- c("b.tt", "b.et","t.tt","t.et","e.tt","e.et")
+test_smsp_EcPhn$cause <- c("bac_smsp_ccm_d9","bac_smsp_ccm", "tetra_smsp_ccm_d9","tetra_smsp_ccm","eup_smsp_ccm_d9","eup_smsp_ccm")
+test_smsp_EcPhn$reciever  <- c("t.t_smsp_ccm","e.t_smsp_ccm", "t.t_smsp_ccm","e.t_smsp_ccm","t.t_smsp_ccm","e.t_smsp_ccm")
+test_smsp_EcPhn$E <- c("bac_d9","bac", "tetra_d9","tetra","eup_d9","eup")
+test_smsp_EcPhn <- test_smsp_EcPhn %>% as.data.frame()               
+msCCM_smsp_EcPhn <- msCCM_list(dlist_smsp, test_smsp_EcPhn, opt_E_smsp, 800)
+```
+
+Pheno-Eco interactions. 
+```{r}
+test_smsp_PhnEc <- NULL # creating a dataframe to call time series for the CCM tests, loop for each treatments
+test_smsp_PhnEc$pair <- c("tt.b", "et.b","tt.t","et.t","tt.e","et.e")
+test_smsp_PhnEc$cause <- c("t.t_smsp_ccm","e.t_smsp_ccm", "t.t_smsp_ccm","e.t_smsp_ccm","t.t_smsp_ccm","e.t_smsp_ccm")
+test_smsp_PhnEc$reciever  <- c("bac_smsp_ccm_d9","bac_smsp_ccm", "tetra_smsp_ccm_d9","tetra_smsp_ccm","eup_smsp_ccm_d9","eup_smsp_ccm")
+test_smsp_PhnEc$E <- c("t.t", "e.t", "t.t", "e.t", "t.t", "e.t")
+test_smsp_PhnEc <- test_smsp_PhnEc %>% as.data.frame()                          
+msCCM_smsp_PhnEc <- msCCM_list(dlist_smsp, test_smsp_PhnEc, opt_E_smsp, 800)
+```
+
+Pheno-Pheno interactions. 
+```{r}
+test_smsp_PhnPhn <- NULL 
+test_smsp_PhnPhn$pair <- c("tt.et", "et.tt")
+test_smsp_PhnPhn$cause <- c("t.t_smsp_ccm","e.t_smsp_ccm_d9")
+test_smsp_PhnPhn$reciever  <- c("e.t_smsp_ccm_d9", "t.t_smsp_ccm")
+test_smsp_PhnPhn$E <- c("t.t", "e.t_d9")
+test_smsp_PhnPhn <- test_smsp_PhnPhn %>% as.data.frame()                          
+msCCM_smsp_PhnPhn <- msCCM_list(dlist_smsp, test_smsp_PhnPhn, opt_E_smsp, 800)
+```
+
+##### 4.2.3.2 Multispactial CCM plots with Smooth Spline interpolation
+
+###### Appendix II Fig 9
+
+```{r,fig.width=12, fig.height=8}
+# Eco-Eco
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_smsp_EcEc, i*6-5,trt_name[i], EcEc_col,EcEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcEc_col, lty = EcEc_line, legend =c("B -> T","T -> B", "B -> E", "E -> B", "T -> E","E -> T" ), lwd = 2,  cex = 2)
+mtext("Eco-Eco multispacial CCM Prediction (smooth spline)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 10
+
+```{r,fig.width=12, fig.height=8}
+# Eco-Pheno msCCM 
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_smsp_EcPhn, i*6-5,trt_name[i],EcPhn_col,EcPhn_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = EcPhn_col, lty = EcPhn_line, legend =c( "B -> Tt", "B -> Et", "T -> Tt","T -> Et", "E -> Tt", "E -> Et"), lwd = 2,  cex = 2)
+mtext("Eco-Pheno multispacial CCM Prediction (smooth spline)", outer = TRUE, cex = 2)}
+```
+###### Appendix II Fig 11
+
+```{r,fig.width=12, fig.height=8}
+# Pheno-Eco msCCM 
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0))
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+{for(i in c(1:4)){
+    plot_msccm(msCCM_smsp_PhnEc, i*6-5,trt_name[i],PhnEc_col, PhnEc_line)
+  }
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = PhnEc_col, lty = PhnEc_line, legend =c( "Tt -> B", "Et -> B", "Tt -> T","Et -> T", "Tt -> E", "Et -> E"), lwd = 2,  cex = 2)
+mtext("Pheno-Eco multispacial CCM Prediction (smooth spline)", outer = TRUE, cex = 2)}
+```
+
+###### Appendix II Fig 12
+```{r,fig.width=12, fig.height=8}
+#Pheno-Pheno
+par(mfrow = c(2,3),oma = c(0, 2, 4, 0), bg = "white")
+layout(mat = matrix(c(1,2,5,3,4,0), byrow = T, nrow = 2))
+for(i in c(1,3,5,7)){
+plot(msCCM_smsp_PhnPhn[[i]][["Lobs"]], msCCM_smsp_PhnPhn[[i]][["rho"]],type="l", col = "#FFC857", lwd = 2, lty = 1, xlim=c(5, 80), ylim=c(0,1), xlab="Library length", ylab="rho",cex.lab=1.5, cex.axis=1.5, cex.names = 1.5 ) # b.t
+  lines(msCCM_smsp_PhnPhn[[i+1]][["Lobs"]], msCCM_smsp_PhnPhn[[i+1]][["rho"]], type="l", col = "#FFC857", lwd = 2, lty = 2) 
+}
+plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+legend( "bottomleft", inset=0, title="species pair",col = c("#FFC857","#FFC857"), lty = c(1,2), legend =c( "Tt -> Et", "Et -> Tt"), lwd = 2,  cex = 2)
+mtext("Pheno-Pheno multispacial CCM Prediction (smooth spline)", outer = TRUE, cex = 2)
+```
+
+
+##### 4.2.3.3 Plot the rho at largest library size
+```{r,fig.width=12, fig.height=8}
+EcEcRho$rho_smsp<- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_smsp_EcEc))
+EcEcRho$Lobs_smsp<- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_smsp_EcEc))
+
+EcPhnRho$rho_smsp<- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_smsp_EcPhn ))
+EcPhnRho$Lobs_smsp<- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_smsp_EcPhn))
+
+PhnEcRho$rho_smsp<- do.call(rbind,mclapply(1:24,Extra.rho,dlist = msCCM_smsp_PhnEc ))
+PhnEcRho$Lobs_smsp<- do.call(rbind,mclapply(1:24,Extra.Lobs,dlist = msCCM_smsp_PhnEc))
+
+PhnPhnRho$rho_smsp<- do.call(rbind,mclapply(1:8,Extra.rho,dlist = msCCM_smsp_PhnPhn))
+PhnPhnRho$Lobs_smsp<- do.call(rbind,mclapply(1:8,Extra.Lobs,dlist = msCCM_smsp_PhnPhn))
+
+rho.all3 <- rbind(EcEcRho,EcPhnRho) %>% full_join(PhnEcRho) %>% full_join(PhnPhnRho)%>% mutate(species = factor(species, levels= c("BT","BE", "TE", "Tetra", "Eup")), direc = factor(direc,levels=c("up", "single","down")),nut = factor(nut,levels = c("Low","High")))
+```
+
+Again,we removed the following CCM results that did not show clear convergence and replaced them with NAs. 
+
+EcoEco Full 22C b.t
+EcoPheno Half 25C b.et
+PhenoEco Half 22C et.t
+PhenoPheno Half 25C et.tt
+
+```{r,fig.width=12, fig.height=8}
+rho.all3[which(rho.all2$trt=="F22" & rho.all1$mapping=="b.t" & rho.all1$dynamics=="EcoEco"), c("rho_smsp", "Lobs_smsp")] <- NA
+rho.all3[which(rho.all2$trt=="H25" & rho.all1$mapping=="b.et" & rho.all1$dynamics=="EcoPheno"), c("rho_smsp", "Lobs_smsp")] <- NA
+rho.all3[which(rho.all2$trt=="H22" & rho.all1$mapping=="et.t" & rho.all1$dynamics=="PhenoEco"), c("rho_smsp", "Lobs_smsp")] <- NA
+rho.all3[which(rho.all2$trt=="H25" & rho.all1$mapping=="et.tt" & rho.all1$dynamics=="PhenoPheno"), c("rho_smsp", "Lobs_smsp")] <- NA
+```
+
+
+###### Appendix II Fig 15
+```{r fig.width=8, fig.height=6}
+ggplot(data = rho.all3, aes(x=nut, y=rho_smsp, group=mapping, color= species,shape = direc, lty = direc)) + 
+  #geom_hline(yintercept=0,color = "#bcbcbc",  size = 0.3) +
+  geom_line(data = rho.all3, aes(x=nut, y=rho_smsp),size =0.7) +  
+  geom_point(size =2, strok =1) +
+  ylim(0,1)+
+    scale_x_discrete(limits=c("Low","High")) +
+    labs(y="CCM Predictability", x = "") +
+  facet_wrap(~ dynamics + temp, nrow =2) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black") ) +
+    scale_colour_manual(values=  c("#A997DF","#add0af", "#FFC857","#929084","#2E4052")) +
+    scale_linetype_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(1,3,2)) +
+    scale_shape_manual(name = "Direction", labels = c("Buttom up", "Single Species","Top down"), values = c(19, 17, 1))
+```
+
+# 4.3 Fig 4 Averged rho plot
+
+We first replaced the CCM results that did no show clear convergence with NAs, as indicated in section 4.2.1.3, 4.2.2.3 and 4.2.3.3. 
+
+```{r,fig.width=10, fig.height=8}
+rho.all3[which(rho.all3$trt=="F25" & rho.all3$mapping=="b.e" & rho.all3$dynamics=="EcoEco"), c("rho_app", "Lobs_app")] <- NA
+
+rho.all3[which(rho.all3$trt=="F25" & rho.all1$mapping=="b.t" & rho.all1$dynamics=="EcoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all3[which(rho.all3$trt=="H25" & rho.all1$mapping=="b.et" & rho.all1$dynamics=="EcoPheno"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all3[which(rho.all3$trt=="H22" & rho.all1$mapping=="et.t" & rho.all1$dynamics=="PhenoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all3[which(rho.all3$trt=="F22" & rho.all1$mapping=="et.t" & rho.all1$dynamics=="PhenoEco"), c("rho_sp", "Lobs_sp")] <- NA
+rho.all3[which(rho.all3$trt=="H25" & rho.all1$mapping=="et.tt" & rho.all1$dynamics=="PhenoPheno"), c("rho_sp", "Lobs_sp")] <- NA
+# rho.all3 already includes NAs replaced in section 4.2.3.3
+rho.all4 <- rho.all3 %>% mutate(rho_mean = rowMeans(rho.all3[, c(8,10,12)], na.rm=TRUE))
+```
+
+
+Here is the main text figure 4. 
+```{r fig.width=8, fig.height=6}
+ggplot(data = rho.all4, aes(x=nut, y=rho_mean, group=mapping, color= species,shape = direc, lty = direc)) + 
+  ylim(0,1)+
+  geom_line(data = rho.all4, aes(x=nut, y=rho_mean),size =0.7) +  
+  geom_point(size =2, strok =1) +
+    scale_x_discrete(limits=c("Low","High")) +
+    labs(y="CCM Predictability", x = "") +
+  facet_wrap(~ dynamics + temp, nrow =2) +
+    theme_bw() +
+    theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black") )  +
+    scale_colour_manual(values=  c("#A997DF","#add0af", "#FFC857","#929084","#2E4052")) +
+    scale_linetype_manual(name = "Direction", labels = c("Bottom up", "Single Species","Top down"), values = c(1,3,2)) +
+    scale_shape_manual(name = "Direction", labels = c("Bottom up", "Single Species","Top down"), values = c(19, 17, 1))
+```
+
