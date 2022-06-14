@@ -10,5 +10,6 @@ This repository has the following files:
 1) Density data for protists studied: Density.csv
 2) Trait data for all species studied: Trait_summary.csv
 3) Bacteria OD600 data: bac_OD.csv
-4) R Code that reproduces all analyses presented in the main text: BTE_main_text_code.csv (html version as BTE_main_text_code.html)
-5) R Code that reproduces all analyses presented in the Appendix: BTE_Appendix.csv (html version as BTE_Appendix_clean.html)
+4) R Code that reproduces all analyses presented in the main text and in Appendix II: BTE_main_text_AppendixII
+5) .csv (html version as BTE_main_text_code.html)
+6) R Code that reproduces all analyses presented in the Appendix I: BTE_Appendix_I.csv (html version as BTE_Appendix_clean.html)
