@@ -1,4 +1,4 @@
-# Repository for Han et al 2021 (Submitted)
+# Repository for Han et al 2022 (Submitted)
 
 Han, Z-Y, DJ Wieczynski, A Yammine, JP Gibert, Temperature and nutrients drive complex eco-phenotypic dynamics in a microbial food web.
 
